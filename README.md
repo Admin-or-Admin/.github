@@ -434,7 +434,3 @@ The core polling loop in `ingestor` calls `fetchNewLogs()` on every configured a
 | Real-time push | WebSockets (`ws`) |
 
 ---
-
-## Licence
-
-MIT
