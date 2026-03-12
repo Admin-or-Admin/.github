@@ -1,22 +1,20 @@
+version: "3.9"
+
 services:
+  # --- Infrastructure ---
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
-    container_name: zookeeper
+    container_name: aurora-zookeeper
     restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-      - zookeeper-logs:/var/lib/zookeeper/log
-    ports:
-      - "2181:2181"
     networks:
-      - exposed
+      - aurora-net
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
-    container_name: kafka
+    container_name: aurora-kafka
     restart: unless-stopped
     depends_on:
       - zookeeper
@@ -26,37 +24,22 @@ services:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://192.168.1.6:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 168
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
-      interval: 5s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 5
-    volumes:
-      - kafka-data:/var/lib/kafka/data
     networks:
-      - exposed
-
-  redpanda-console:
-    image: docker.redpanda.com/redpandadata/console:latest
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_BROKERS: kafka:9092
-    networks:
-      - exposed
+      - aurora-net
 
   postgres:
     image: postgres:15
-    container_name: postgres
+    container_name: aurora-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: cybercontrol
@@ -64,14 +47,12 @@ services:
       POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
     networks:
-      - exposed
+      - aurora-net
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
-    container_name: elasticsearch
+    container_name: aurora-elasticsearch
     restart: unless-stopped
     environment:
       - discovery.type=single-node
@@ -79,31 +60,194 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
-      - exposed
+      - aurora-net
 
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.12.0
-    container_name: kibana
+  # --- Application Services ---
+  gateway:
+    build: ./gateway
+    container_name: aurora-gateway
     restart: unless-stopped
     depends_on:
-      - elasticsearch
-    environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - postgres
     ports:
-      - "5601:5601"
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
+      APP_TITLE: Aurora Gateway
+      APP_VERSION: 1.0.0
+      PORT: 8000
+      HOST: 0.0.0.0
+      CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://localhost"
     networks:
-      - exposed
+      - aurora-net
 
-volumes:
-  zookeeper-data:
-  zookeeper-logs:
-  kafka-data:
-  postgres-data:
-  elasticsearch-data:
+  ingestor:
+    build:
+      context: .
+      dockerfile: ingestor/Dockerfile
+    container_name: aurora-ingestor
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
+    environment:
+      ENABLED_INGESTORS: elasticsearch,mock_logs,gns3,cisco
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: logs.unfiltered
+      ELASTIC_HOST: http://elasticsearch:9200
+      ELASTIC_INDEX: mock-logs
+      POLL_INTERVAL: 1.0
+      SYSLOG_PORT: 1514
+      SIM_INTERVAL: 1.0
+      GNS3_SIMULATION_ENABLED: "false"
+      CISCO_SYSLOG_PORT: 1515
+      CISCO_SIMULATION_ENABLED: "false"
+      CISCO_SIM_INTERVAL: 1.0
+      MOCK_DELAY: 0.5
+    networks:
+      - aurora-net
+
+  network-simulator:
+    build: ./simulator
+    container_name: aurora-network-simulator
+    restart: unless-stopped
+    depends_on:
+      - ingestor
+    environment:
+      INGESTOR_HOST: ingestor
+      GNS3_PORT: 1514
+      CISCO_PORT: 1515
+      SIM_INTERVAL: 1.0
+    networks:
+      - aurora-net
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ledger/Dockerfile
+    container_name: aurora-ledger
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
+      KAFKA_GROUP_ID: ledger-group
+      LOG_LEVEL: INFO
+      SCRAPE_FROM_BEGINNING: "false"
+      DROP_DB: "false"
+    networks:
+      - aurora-net
+
+  # correlator:
+  #   build: ./correlator
+  #   container_name: aurora-correlator
+  #   restart: unless-stopped
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  #     KAFKA_GROUP_ID: log-correlator-group
+  #     KAFKA_AUTO_OFFSET_RESET: earliest
+  #     INPUT_TOPICS: '["logs.firewall","logs.auth","logs.endpoint","logs.network","logs.application","logs.dns","logs.ids"]'
+  #     OUTPUT_TOPIC: events.correlated
+  #     DLQ_TOPIC: logs.dlq
+  #     SHORT_WINDOW_SECONDS: 60
+  #     MEDIUM_WINDOW_SECONDS: 300
+  #     LONG_WINDOW_SECONDS: 3600
+  #     FLUSH_INTERVAL_SECONDS: 30
+  #     MAX_BUFFER_SIZE: 1000
+  #     BRUTE_FORCE_THRESHOLD: 5
+  #     PORT_SCAN_THRESHOLD: 15
+  #     LATERAL_MOVEMENT_HOPS: 3
+  #     DATA_EXFIL_BYTES_THRESHOLD: 50000000
+  #     SERVICE_NAME: log-correlator
+  #     LOG_LEVEL: INFO
+  #   networks:
+  #     - aurora-net
+
+  classifier:
+    build: ./rac-agents
+    container_name: aurora-classifier
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      CLASSIFIER_MODE: kafka
+      CLASSIFIER_HEARTBEAT_INTERVAL: 30
+      KNOWLEDGE_DIR: classifierKnowledge
+      KNOWLEDGE_CHUNK_SIZE: 500
+      KNOWLEDGE_CHUNK_OVERLAP: 50
+      KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python classifier.py
+    networks:
+      - aurora-net
+
+  analyst:
+    build: ./rac-agents
+    container_name: aurora-analyst
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      ANALYST_MODE: kafka
+      ANALYST_HEARTBEAT_INTERVAL: 30
+      MIN_CLASSIFICATION_CONFIDENCE: 70
+      ANALYST_KNOWLEDGE_DIR: analystKnowledge
+      ANALYST_KNOWLEDGE_CHUNK_SIZE: 500
+      ANALYST_KNOWLEDGE_CHUNK_OVERLAP: 50
+      ANALYST_KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python analyst.py
+    networks:
+      - aurora-net
+
+  responder:
+    build: ./rac-agents
+    container_name: aurora-responder
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      RESPONDER_MODE: kafka
+      RESPONDER_HEARTBEAT_INTERVAL: 30
+      RESPONDER_KNOWLEDGE_DIR: responderKnowledge
+      RESPONDER_KNOWLEDGE_CHUNK_SIZE: 500
+      RESPONDER_KNOWLEDGE_CHUNK_OVERLAP: 50
+      RESPONDER_KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python responder.py
+    networks:
+      - aurora-net
+
+  dashboard:
+    build: ./dashboard
+    container_name: aurora-dashboard
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    ports:
+      - "8080:80"
+    networks:
+      - aurora-net
 
 networks:
-  exposed:
+  aurora-net:
     driver: bridge
