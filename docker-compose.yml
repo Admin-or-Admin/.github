@@ -9,6 +9,12 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-logs:/var/lib/zookeeper/log
@@ -20,7 +26,8 @@ services:
     container_name: aurora-kafka
     restart: unless-stopped
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "29092:29092"
     environment:
@@ -52,6 +59,11 @@ services:
       POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d cybercontrol"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
@@ -67,6 +79,11 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"\\(green\\|yellow\\)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
@@ -74,13 +91,23 @@ services:
 
   # --- Application Services ---
   gateway:
-    build: ./gateway
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
     container_name: aurora-gateway
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
       APP_TITLE: Aurora Gateway
@@ -101,7 +128,12 @@ services:
       kafka:
         condition: service_healthy
       elasticsearch:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python ingestor/main.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       ENABLED_INGESTORS: elasticsearch,mock_logs,gns3,cisco
       KAFKA_BROKERS: kafka:9092
@@ -120,13 +152,16 @@ services:
       - aurora-net
 
   network-simulator:
-    build: ./simulator
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
     container_name: aurora-network-simulator
     restart: unless-stopped
     depends_on:
-      - ingestor
+      ingestor:
+        condition: service_healthy
     environment:
-      INGESTOR_HOST: ingestor
+      INGESTOR_HOST: aurora-ingestor
       GNS3_PORT: 1514
       CISCO_PORT: 1515
       SIM_INTERVAL: 1.0
@@ -143,7 +178,12 @@ services:
       kafka:
         condition: service_healthy
       postgres:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python ledger/main.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
       DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
@@ -154,41 +194,22 @@ services:
     networks:
       - aurora-net
 
-  # correlator:
-  #   build: ./correlator
-  #   container_name: aurora-correlator
-  #   restart: unless-stopped
-  #   depends_on:
-  #     kafka:
-  #       condition: service_healthy
-  #   environment:
-  #     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-  #     KAFKA_GROUP_ID: log-correlator-group
-  #     KAFKA_AUTO_OFFSET_RESET: earliest
-  #     INPUT_TOPICS: '["logs.firewall","logs.auth","logs.endpoint","logs.network","logs.application","logs.dns","logs.ids"]'
-  #     OUTPUT_TOPIC: events.correlated
-  #     DLQ_TOPIC: logs.dlq
-  #     SHORT_WINDOW_SECONDS: 60
-  #     MEDIUM_WINDOW_SECONDS: 300
-  #     LONG_WINDOW_SECONDS: 3600
-  #     FLUSH_INTERVAL_SECONDS: 30
-  #     MAX_BUFFER_SIZE: 1000
-  #     BRUTE_FORCE_THRESHOLD: 5
-  #     PORT_SCAN_THRESHOLD: 15
-  #     LATERAL_MOVEMENT_HOPS: 3
-  #     DATA_EXFIL_BYTES_THRESHOLD: 50000000
-  #     SERVICE_NAME: log-correlator
-  #     LOG_LEVEL: INFO
-  #   networks:
-  #     - aurora-net
-
   classifier:
-    build: ./rac-agents
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
     container_name: aurora-classifier
     restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/classifier.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: 
@@ -199,17 +220,26 @@ services:
       KNOWLEDGE_CHUNK_OVERLAP: 50
       KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
-    command: python classifier.py
+    command: python rac-agents/classifier.py
     networks:
       - aurora-net
 
   analyst:
-    build: ./rac-agents
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
     container_name: aurora-analyst
     restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/analyst.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: 
@@ -221,17 +251,26 @@ services:
       ANALYST_KNOWLEDGE_CHUNK_OVERLAP: 50
       ANALYST_KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
-    command: python analyst.py
+    command: python rac-agents/analyst.py
     networks:
       - aurora-net
 
   responder:
-    build: ./rac-agents
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
     container_name: aurora-responder
     restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/responder.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: 
@@ -242,18 +281,24 @@ services:
       RESPONDER_KNOWLEDGE_CHUNK_OVERLAP: 50
       RESPONDER_KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
-    command: python responder.py
+    command: python rac-agents/responder.py
     networks:
       - aurora-net
 
   dashboard:
-    build: ./dashboard
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
     container_name: aurora-dashboard
     restart: unless-stopped
     depends_on:
-      - gateway
+      gateway:
+        condition: service_healthy
     ports:
       - "8080:80"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_OPENAI_API_KEY: 
     networks:
       - aurora-net
 
@@ -264,6 +309,6 @@ networks:
 volumes:
   zookeeper-data:
   zookeeper-logs:
-  kafka-data:
+  kafka-data3:
   postgres-data:
   elasticsearch-data:
