@@ -9,6 +9,9 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
     networks:
       - aurora-net
 
@@ -34,6 +37,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     networks:
       - aurora-net
 
@@ -47,6 +52,8 @@ services:
       POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - aurora-net
 
@@ -60,6 +67,8 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
       - aurora-net
 
@@ -251,3 +260,10 @@ services:
 networks:
   aurora-net:
     driver: bridge
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  postgres-data:
+  elasticsearch-data:
