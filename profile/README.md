@@ -38,7 +38,7 @@ Every component is an independent service. They communicate exclusively through 
 
 A raw log enters the system. Within seconds it has been classified, investigated by an AI analyst with access to your organisation's threat knowledge base, and a full remediation plan has been generated — with exact commands, risk levels, and rollback instructions for each step. Steps that are safe and low-risk execute automatically. Steps that carry risk wait for a human to approve or deny them in the dashboard. The entire trail — from raw log to resolved incident — is stored in PostgreSQL and queryable at any time.
 
-The three AI agents at the heart of the pipeline are called the **RAC agents**: Recognise, Analyse, Classify. They are the classifier, analyst, and responder respectively. All three use RAG (Retrieval-Augmented Generation) — you can drop documents into their knowledge folders (PDFs, DOCX, Markdown) and they will embed, cache, and retrieve the most relevant sections at inference time, making every AI call aware of your specific environment.
+The three AI agents at the heart of the pipeline are called the **RAC agents**: Recognise, Analyse, Counter. They are the classifier, analyst, and responder respectively. All three use RAG (Retrieval-Augmented Generation) — you can drop documents into their knowledge folders (PDFs, DOCX, Markdown) and they will embed, cache, and retrieve the most relevant sections at inference time, making every AI call aware of your specific environment.
 
 ---
 
