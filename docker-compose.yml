@@ -154,7 +154,7 @@ services:
   network-simulator:
     build:
       context: .
-      dockerfile: simulator/Dockerfile
+      dockerfile: device_simulation/Dockerfile
     container_name: aurora-network-simulator
     restart: unless-stopped
     depends_on:
