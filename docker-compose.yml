@@ -309,6 +309,6 @@ networks:
 volumes:
   zookeeper-data:
   zookeeper-logs:
-  kafka-data3:
+  kafka-data:
   postgres-data:
   elasticsearch-data:
