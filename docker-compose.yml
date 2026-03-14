@@ -11,13 +11,13 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
       KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      test: ["CMD-SHELL", "echo ruok | nc 127.0.0.1 2181 | grep imok"]
       interval: 10s
       timeout: 5s
       retries: 5
     volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-      - zookeeper-logs:/var/lib/zookeeper/log
+      - zookeeper-data3:/var/lib/zookeeper/data
+      - zookeeper-logs3:/var/lib/zookeeper/log
     networks:
       - aurora-net
 
@@ -45,7 +45,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - kafka-data:/var/lib/kafka/data
+      - kafka-data3:/var/lib/kafka/data
     networks:
       - aurora-net
 
@@ -65,7 +65,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data3:/var/lib/postgresql/data
     networks:
       - aurora-net
 
@@ -85,7 +85,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
+      - elasticsearch-data3:/usr/share/elasticsearch/data
     networks:
       - aurora-net
 
@@ -115,6 +115,8 @@ services:
       PORT: 8000
       HOST: 0.0.0.0
       CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://localhost"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: "gpt-4.1"
     networks:
       - aurora-net
 
@@ -212,7 +214,7 @@ services:
       retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
-      OPENAI_API_KEY: 
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       CLASSIFIER_MODE: kafka
       CLASSIFIER_HEARTBEAT_INTERVAL: 30
       KNOWLEDGE_DIR: classifierKnowledge
@@ -242,7 +244,7 @@ services:
       retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
-      OPENAI_API_KEY: 
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANALYST_MODE: kafka
       ANALYST_HEARTBEAT_INTERVAL: 30
       MIN_CLASSIFICATION_CONFIDENCE: 70
@@ -273,7 +275,7 @@ services:
       retries: 5
     environment:
       KAFKA_BROKERS: kafka:9092
-      OPENAI_API_KEY: 
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       RESPONDER_MODE: kafka
       RESPONDER_HEARTBEAT_INTERVAL: 30
       RESPONDER_KNOWLEDGE_DIR: responderKnowledge
@@ -298,7 +300,6 @@ services:
       - "8080:80"
     environment:
       VITE_API_URL: http://localhost:8000
-      VITE_OPENAI_API_KEY: 
     networks:
       - aurora-net
 
@@ -307,8 +308,8 @@ networks:
     driver: bridge
 
 volumes:
-  zookeeper-data:
-  zookeeper-logs:
-  kafka-data:
-  postgres-data:
-  elasticsearch-data:
+  zookeeper-data3:
+  zookeeper-logs3:
+  kafka-data3:
+  postgres-data3:
+  elasticsearch-data3:
