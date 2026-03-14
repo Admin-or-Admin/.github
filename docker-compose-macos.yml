@@ -1,0 +1,314 @@
+version: "3.9"
+
+services:
+  # --- Infrastructure ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: aurora-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - aurora-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: aurora-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - aurora-net
+
+  postgres:
+    image: postgres:15
+    container_name: aurora-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cybercontrol
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d cybercontrol"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - aurora-net
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: aurora-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"\\(green\\|yellow\\)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - aurora-net
+
+  # --- Application Services ---
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: aurora-gateway
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
+      APP_TITLE: Aurora Gateway
+      APP_VERSION: 1.0.0
+      PORT: 8000
+      HOST: 0.0.0.0
+      CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://localhost"
+    networks:
+      - aurora-net
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: ingestor/Dockerfile
+    container_name: aurora-ingestor
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python ingestor/main.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      ENABLED_INGESTORS: elasticsearch,mock_logs,gns3,cisco
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: logs.unfiltered
+      ELASTIC_HOST: http://elasticsearch:9200
+      ELASTIC_INDEX: mock-logs
+      POLL_INTERVAL: 1.0
+      SYSLOG_PORT: 1514
+      SIM_INTERVAL: 1.0
+      GNS3_SIMULATION_ENABLED: "false"
+      CISCO_SYSLOG_PORT: 1515
+      CISCO_SIMULATION_ENABLED: "false"
+      CISCO_SIM_INTERVAL: 1.0
+      MOCK_DELAY: 0.5
+    networks:
+      - aurora-net
+
+  network-simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    container_name: aurora-network-simulator
+    restart: unless-stopped
+    depends_on:
+      ingestor:
+        condition: service_healthy
+    environment:
+      INGESTOR_HOST: aurora-ingestor
+      GNS3_PORT: 1514
+      CISCO_PORT: 1515
+      SIM_INTERVAL: 1.0
+    networks:
+      - aurora-net
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ledger/Dockerfile
+    container_name: aurora-ledger
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python ledger/main.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      DATABASE_URL: postgresql://admin:secret@postgres:5432/cybercontrol
+      KAFKA_GROUP_ID: ledger-group
+      LOG_LEVEL: INFO
+      SCRAPE_FROM_BEGINNING: "false"
+      DROP_DB: "false"
+    networks:
+      - aurora-net
+
+  classifier:
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
+    container_name: aurora-classifier
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/classifier.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      CLASSIFIER_MODE: kafka
+      CLASSIFIER_HEARTBEAT_INTERVAL: 30
+      KNOWLEDGE_DIR: classifierKnowledge
+      KNOWLEDGE_CHUNK_SIZE: 500
+      KNOWLEDGE_CHUNK_OVERLAP: 50
+      KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python rac-agents/classifier.py
+    networks:
+      - aurora-net
+
+  analyst:
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
+    container_name: aurora-analyst
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/analyst.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      ANALYST_MODE: kafka
+      ANALYST_HEARTBEAT_INTERVAL: 30
+      MIN_CLASSIFICATION_CONFIDENCE: 70
+      ANALYST_KNOWLEDGE_DIR: analystKnowledge
+      ANALYST_KNOWLEDGE_CHUNK_SIZE: 500
+      ANALYST_KNOWLEDGE_CHUNK_OVERLAP: 50
+      ANALYST_KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python rac-agents/analyst.py
+    networks:
+      - aurora-net
+
+  responder:
+    build:
+      context: .
+      dockerfile: rac-agents/Dockerfile
+    container_name: aurora-responder
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python rac-agents/responder.py' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OPENAI_API_KEY: 
+      RESPONDER_MODE: kafka
+      RESPONDER_HEARTBEAT_INTERVAL: 30
+      RESPONDER_KNOWLEDGE_DIR: responderKnowledge
+      RESPONDER_KNOWLEDGE_CHUNK_SIZE: 500
+      RESPONDER_KNOWLEDGE_CHUNK_OVERLAP: 50
+      RESPONDER_KNOWLEDGE_TOP_K: 5
+      RATE_LIMIT_WAIT_SECONDS: 60
+    command: python rac-agents/responder.py
+    networks:
+      - aurora-net
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: aurora-dashboard
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_OPENAI_API_KEY: 
+    networks:
+      - aurora-net
+
+networks:
+  aurora-net:
+    driver: bridge
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  postgres-data:
+  elasticsearch-data:
