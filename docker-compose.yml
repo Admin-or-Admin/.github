@@ -11,13 +11,13 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
       KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc 127.0.0.1 2181 | grep imok"]
+      test: ["CMD-SHELL", "echo ruok | nc 0.0.0.0 2181 | grep imok"]
       interval: 10s
       timeout: 5s
       retries: 5
     volumes:
-      - zookeeper-data3:/var/lib/zookeeper/data
-      - zookeeper-logs3:/var/lib/zookeeper/log
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
     networks:
       - aurora-net
 
@@ -45,7 +45,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - kafka-data3:/var/lib/kafka/data
+      - kafka-data:/var/lib/kafka/data
     networks:
       - aurora-net
 
@@ -65,7 +65,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - postgres-data3:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - aurora-net
 
@@ -85,7 +85,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - elasticsearch-data3:/usr/share/elasticsearch/data
+      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
       - aurora-net
 
@@ -308,8 +308,8 @@ networks:
     driver: bridge
 
 volumes:
-  zookeeper-data3:
-  zookeeper-logs3:
-  kafka-data3:
-  postgres-data3:
-  elasticsearch-data3:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  postgres-data:
+  elasticsearch-data:
