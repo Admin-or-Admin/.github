@@ -369,16 +369,14 @@ docker compose up --build -d
 
 ### 5. Open the dashboard
 
-Dashboard is available at:
+When the services are manually started dashboard is available at:
 ```
 http://localhost:5173
 ```
-when the services are manually started, or at:
+Or when using Docker Compose at:
 ```
 http://localhost:8080
 ```
-when using Docker Compose.
-
 Gateway API documentation (Swagger UI) is available at:
 
 ```
