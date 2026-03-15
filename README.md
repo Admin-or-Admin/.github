@@ -16,6 +16,7 @@ Built on Apache Kafka as its central nervous system, Aurora is composed of seven
 
 - [Overview](#overview)
 - [Architecture](#architecture)
+- [Authentication](#authentication)
 - [Services](#services)
 - [Data Flow](#data-flow)
 - [Kafka Topics](#kafka-topics)
@@ -109,6 +110,84 @@ flowchart TD
     UI -->|PATCH /remediation| GW
     GW --> ACT
 ```
+
+---
+
+## Authentication
+
+Aurora employs a production-grade, stateless authentication system based on **OAuth2 with Password Flow** and **JSON Web Tokens (JWT)**. This ensures that the platform remains secure, scalable, and multi-user capable while maintaining the "Aurora" minimalist aesthetic.
+
+---
+
+### 1. Technical Architecture
+
+#### Backend (FastAPI)
+- **Framework**: `FastAPI` + `SQLModel` (ORM).
+- **Encryption**: `BCrypt` for password hashing (specifically pinned to `3.2.0` for `passlib` compatibility).
+- **Token Type**: `JWT` (HS256) for stateless session management.
+- **Security Dependency**: `get_current_user` dependency injection for zero-trust endpoint protection.
+
+#### Frontend (React + TypeScript)
+- **State Management**: `AuthContext` provides global `user` and `isAuthenticated` state.
+- **Persistence**: Tokens are securely stored in `localStorage` and managed via a centralized API interceptor.
+- **Automatic Interception**: All API calls via `lib/api.ts` automatically inject the `Authorization: Bearer <token>` header and handle `401 Unauthorized` redirects.
+
+---
+
+### 2. Configuration Reference
+
+The following variables must be configured in the root `.env` file and are passed to the `gateway` service via `docker-compose.yml`.
+
+| Variable | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `AUTH_SECRET_KEY` | **Yes** | — | High-entropy key for signing JWTs. |
+| `AUTH_ALGORITHM` | No | `HS256` | Cryptographic signing algorithm. |
+| `AUTH_TOKEN_EXPIRE_MINUTES` | No | `60` | Session duration before required re-login. |
+
+For the `AUTH_ALGORITHM` option, you can use HS256, HS384, or HS512. The default and recommended option is HS256.
+
+* HS256 (Default): HMAC using SHA-256. Industry standard, excellent balance of security and performance.
+* HS384: HMAC using SHA-384. Slightly higher security margin, rarely needed unless specified by strict compliance.
+* HS512: HMAC using SHA-512. The most secure symmetric option, but produces longer tokens.
+
+---
+
+### 3. Operator Workflows
+
+#### First-Time Initialization
+1.  Start the Aurora stack: `docker compose up -d`.
+2.  Navigate to the dashboard (default: `http://localhost:8080`).
+3.  You will be automatically redirected to the **CyberControl Access** gateway.
+4.  Click **REGISTER_ID** to create your primary operator account.
+
+#### Multi-User Isolation
+Aurora supports isolated environments for different operators:
+- **Chat History**: AI Analyst chat sessions are linked to the specific `user_id`. You will only see and interact with your own sessions.
+- **Remediation Ownership**: All manual approvals or denials are tracked against the authenticated operator's session.
+
+---
+
+### 4. API Reference (Authentication)
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/auth/register` | Create a new operator account. |
+| `POST` | `/auth/login` | Authenticate and receive a JWT access token. |
+| `GET` | `/auth/me` | Retrieve the current authenticated operator profile. |
+
+---
+
+## 5. Security Best Practices
+
+### Password Security
+Passwords are never stored in plain text. The system uses `passlib` with the `bcrypt` handler to generate unique salts and perform computationally expensive hashes, protecting against rainbow table and brute-force attacks.
+
+### Token Validation
+Every request to a secured endpoint (Logs, Threats, Incidents, AI Analyst) is validated by the `gateway`. If a token is missing, expired, or tampered with, the system returns a `401 Unauthorized` error immediately.
+
+### Database Integrity
+The `chat_sessions` and `chat_messages` tables are strictly enforced with foreign key constraints to the `users` table, ensuring data integrity and preventing "orphaned" chat data.
+
 
 ---
 
@@ -348,6 +427,7 @@ Create a `.env` file in the workspace root and add at minimum:
 
 ```env
 OPENAI_API_KEY=sk-...
+AUTH_SECRET_KEY=...
 ```
 
 If you are deploying to a non-local environment, also configure any service URLs and broker addresses in `docker-compose.yml` and the Dashboard `.env` file.
@@ -454,6 +534,9 @@ http://localhost:8000/docs
 | `OPENAI_API_KEY` | — | OpenAI key for the AI Analyst chat. |
 | `OPENAI_MODEL` | `gpt-4.1` | Model used for chat/analysis. |
 | `CORS_ORIGINS` | `http://localhost:5173,...` | Comma-separated list of allowed origins. |
+| `AUTH_SECRET_KEY` | — | High-entropy key for signing JWTs. |
+| `AUTH_ALGORITHM`  | `HS256` | Cryptographic signing algorithm. |
+| `AUTH_TOKEN_EXPIRE_MINUTES`  | `60` | Session duration before required re-login. |
 
 ### Dashboard
 | Variable | Code Default | Description |
