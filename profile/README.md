@@ -1,846 +1,657 @@
-# CyberControl Aurora
+# Aurora
 
-**AI-Powered Cybersecurity Control Center**
+**AI-Powered Autonomous Security Operations Center**
 
-CyberControl Aurora is an event-driven platform that ingests logs from any source, classifies them using AI, and autonomously investigates and responds to cybersecurity threats — with a human always in control of the final decision.
+Aurora is an event-driven platform that ingests logs from any observability source, classifies them using AI agents, and autonomously investigates and responds to cybersecurity threats — with a human always in control of the final decision.
 
-Every component is an independent service. They communicate exclusively through Apache Kafka topics. Nothing calls anything else directly. This means any service can be restarted, replaced, or scaled without touching the others.
+Built on Apache Kafka as its central nervous system, Aurora is composed of seven independent microservices that communicate exclusively through Kafka topics, making the architecture fully decoupled and horizontally scalable.
 
 ---
 
-## Table of contents
+## Table of Contents
 
-- [How it works](#how-it-works)
-- [Repositories](#repositories)
+- [Overview](#overview)
 - [Architecture](#architecture)
-- [Kafka topics](#kafka-topics)
-- [Data flow](#data-flow)
-- [Technology stack](#technology-stack)
+- [Services](#services)
+- [Data Flow](#data-flow)
+- [Kafka Topics](#kafka-topics)
+- [Database Schema](#database-schema)
+- [Technology Stack](#technology-stack)
 - [Prerequisites](#prerequisites)
-- [Quick start](#quick-start)
-- [Service-by-service setup](#service-by-service-setup)
-  - [Infrastructure (.github)](#infrastructure-github)
-  - [ingestor](#ingestor)
-  - [correlator](#correlator)
-  - [rac-agents (classifier · analyst · responder)](#rac-agents-classifier--analyst--responder)
-  - [ledger](#ledger)
-  - [gateway](#gateway)
-  - [dashboard](#dashboard)
-- [Environment variables reference](#environment-variables-reference)
-- [Database schema](#database-schema)
-- [Recommended start order](#recommended-start-order)
-- [Adding a new log source](#adding-a-new-log-source)
-- [Per-repository documentation](#per-repository-documentation)
+- [Getting Started](#getting-started)
+- [Configuration Reference](#configuration-reference)
+- [Running Services Individually](#running-services-individually)
+- [Manual Mode (No Kafka)](#manual-mode-no-kafka)
+- [Extending Aurora](#extending-aurora)
+- [Project Structure](#project-structure)
+- [Related Repositories](#related-repositories)
 
 ---
 
-## How it works
+## Overview
 
-A raw log enters the system. Within seconds it has been classified, investigated by an AI analyst with access to your organisation's threat knowledge base, and a full remediation plan has been generated — with exact commands, risk levels, and rollback instructions for each step. Steps that are safe and low-risk execute automatically. Steps that carry risk wait for a human to approve or deny them in the dashboard. The entire trail — from raw log to resolved incident — is stored in PostgreSQL and queryable at any time.
+Modern enterprises generate terabytes of log data daily. Traditional SIEM systems lead to alert fatigue — critical signals buried under thousands of false positives. Aurora addresses this by automating Tier-1 and Tier-2 SOC operations through a pipeline of AI agents that classify, correlate, investigate, and remediate security events in real time.
 
-The three AI agents at the heart of the pipeline are called the **RAC agents**: Recognise, Analyse, Counter. They are the classifier, analyst, and responder respectively. All three use RAG (Retrieval-Augmented Generation) — you can drop documents into their knowledge folders (PDFs, DOCX, Markdown) and they will embed, cache, and retrieve the most relevant sections at inference time, making every AI call aware of your specific environment.
+A typical security event travels from detection to a human-ready remediation plan in under 10 seconds.
 
----
+**Key capabilities:**
 
-## Repositories
-
-| Repository | Role | Language |
-|---|---|---|
-| [`.github`](https://github.com/Admin-or-Admin/.github) | Docker Compose for all infrastructure — Kafka, PostgreSQL, Elasticsearch, Kibana | — |
-| [`ingestor`](https://github.com/Admin-or-Admin/ingestor) | Pulls logs from external sources and publishes to `logs.unfiltered` | Python |
-| [`correlator`](https://github.com/Admin-or-Admin/correlator) | Aggregates multi-source events and detects attack patterns before classification | Python |
-| [`rac-agents`](https://github.com/Admin-or-Admin/rac-agents) | The three AI agents: classifier, analyst, responder | Python |
-| [`ledger`](https://github.com/Admin-or-Admin/ledger) | Consumes all Kafka topics and persists everything to PostgreSQL | Python |
-| [`gateway`](https://github.com/Admin-or-Admin/gateway) | FastAPI REST service — the only thing that reads from the database and serves the frontend | Python |
-| [`dashboard`](https://github.com/Admin-or-Admin/dashboard) | React/TypeScript operator dashboard for monitoring, investigation, and remediation | TypeScript |
+- Real-time AI classification of raw logs by severity, category, and security relevance
+- Cross-domain threat investigation — the analyst considers infrastructure, deployment, and application logs alongside security events to surface correlations that single-domain analysis misses
+- Structured, step-by-step remediation plans with risk assessments and rollback instructions
+- Human-in-the-loop governance — high-risk steps require explicit operator approval before any action is taken
+- RAG-augmented agents — drop your playbooks, runbooks, and threat intel into knowledge folders and the agents use them automatically
+- Complete audit trail — every classification decision, investigation, and remediation step is persisted
 
 ---
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     LOG SOURCES                          │
-│         Elasticsearch · Mock Generator · GNS3/Syslog     │
-└────────────────────────┬─────────────────────────────────┘
-                         │
-                    [ ingestor ]
-                         │
-                  logs.unfiltered
-                         │
-                   [ correlator ]        ← pattern detection + enrichment
-                         │
-                  logs.unfiltered        ← enriched events
-                         │
-                  [ classifier ] ←── classifierKnowledge/  (RAG)
-                         │
-                  logs.categories
-                         │
-                    [ analyst ] ←────── analystKnowledge/   (RAG)
-                         │
-                  logs.solver_plan
-                         │
-                   [ responder ] ←───── responderKnowledge/ (RAG)
-                         │
-                  logs.solution
-                         │
-                    [ ledger ] ←── also consumes ALL other topics
-                         │
-                    PostgreSQL
-                         │
-                    [ gateway ]   ← FastAPI · REST · PATCH
-                         │
-                   [ dashboard ]  ← React · TypeScript · Vite
-                         │
-                    Human Operator
-                    approve / deny
-                         │
-            (PATCH /remediation/{id} → actions topic → responder)
-```
+Aurora uses an **Event-Driven Microservices Architecture**. No service calls another service directly. All inter-service communication flows through Kafka topics. The Ledger is the only service that writes to PostgreSQL — all other services either publish to Kafka or read from the database via the Gateway.
 
-All five Kafka topics also feed into the ledger in parallel. The diagram above shows the main spine for clarity.
+```mermaid
+flowchart TD
+    subgraph Sources["External Sources"]
+        ES[Elasticsearch]
+        MOCK[Mock Generator]
+        GNS3[GNS3 / Syslog]
+    end
+
+    subgraph Ingestion["Ingestion Layer"]
+        ING[Ingestor]
+    end
+
+    subgraph Kafka["Kafka Topics"]
+        LU[logs.unfiltered]
+        LC[logs.categories]
+        LSP[logs.solver_plan]
+        LS[logs.solution]
+        AN[analytics]
+        ACT[actions]
+    end
+
+    subgraph Agents["AI Agent Layer — rac-agents"]
+        CLASS[Classifier]
+        ANALYST[Analyst]
+        RESP[Responder]
+    end
+
+    subgraph Persistence["Persistence Layer"]
+        LEDGER[Ledger]
+        DB[(PostgreSQL)]
+    end
+
+    subgraph API["Presentation Layer"]
+        GW[Gateway]
+        UI[Dashboard]
+    end
+
+    ES & MOCK & GNS3 --> ING
+    ING --> LU
+    LU --> CLASS
+    CLASS --> LC
+    CLASS --> AN
+    LC --> ANALYST
+    ANALYST --> LSP
+    ANALYST --> AN
+    LSP --> RESP
+    RESP --> LS
+    RESP --> AN
+
+    LU & LC & LSP & LS & AN & ACT --> LEDGER
+    LEDGER --> DB
+    DB --> GW
+    GW --> UI
+    UI -->|PATCH /remediation| GW
+    GW --> ACT
+```
 
 ---
 
-## Kafka topics
+## Services
 
-All inter-service communication happens through these topics. No service calls another service directly over HTTP.
+### Ingestor
+
+The entry point of the pipeline. Pulls log events from external sources and publishes them to `logs.unfiltered`. Source-agnostic — each log source is an independent adapter running in its own thread. Adding a new source requires only a new adapter file.
+
+**Adapters:**
+
+| Adapter | Description |
+|---|---|
+| `elasticsearch` | Polls an Elasticsearch index using a cursor to avoid reprocessing on restart |
+| `mock_logs` | Generates synthetic security events and indexes them into Elasticsearch for end-to-end testing |
+| `gns3` | Runs a UDP syslog listener on port 1514 and a Cisco-style log simulator for network lab environments |
+
+The Elasticsearch adapter performs a startup handshake with the Ledger over the `actions` topic to retrieve the last processed timestamp. If the Ledger is not yet available, the adapter waits up to 10 seconds before falling back to epoch.
+
+---
+
+### RAC Agents (Classifier, Analyst, Responder)
+
+Three autonomous Python agents forming the core intelligence pipeline. Each is a standalone process that can run on separate machines, scale independently, and restart without affecting the others. All three use an LLM router and can rotate across multiple API keys automatically on rate limit errors.
+
+#### Classifier
+
+Reads raw logs from `logs.unfiltered` and produces a structured classification for each one.
+
+**Output per log:**
+
+| Field | Description |
+|---|---|
+| `category` | `security`, `infrastructure`, `application`, or `deployment` |
+| `severity` | `critical`, `high`, `medium`, `low`, or `info` |
+| `tags` | 2–5 descriptive lowercase tags |
+| `isCybersecurity` | Whether the log has security relevance |
+| `sendToInvestigationAgent` | True only if `isCybersecurity` is true and severity is not `info` |
+| `classificationConfidence` | 0–100 model confidence score |
+| `reasoning` | One sentence explaining the classification |
+
+#### Analyst
+
+Consumes classified logs from `logs.categories`. Applies two filters before spending tokens: drops logs below `MIN_CLASSIFICATION_CONFIDENCE` and drops non-security events. For logs that pass, it performs a deep threat investigation using the log, its classification, and relevant chunks from `analystKnowledge/`.
+
+**Output per investigation:**
+
+| Field | Description |
+|---|---|
+| `aiSuggestion` | 2–3 sentences describing the threat |
+| `attackVector` | Specific technique or threat pattern identified |
+| `complexity` | `simple` or `complex` — drives the responder's resolution mode |
+| `autoFixable` | Whether automation can safely resolve this |
+| `requiresHumanApproval` | Whether operator sign-off is required |
+| `priority` | 1–5 urgency scale |
+| `proposedSteps` | Ordered remediation steps with commands, risk levels, and rollback instructions |
+
+#### Responder
+
+Takes the analyst's investigation and produces a final, executable resolution plan that is persisted by the Ledger and surfaced in the Dashboard.
+
+**Resolution modes:**
+
+- `autonomous` — assigned when `autoFixable=true` and `complexity=simple`. Steps tagged `autoExecute: true` are cleared for execution without human approval.
+- `guided` — assigned otherwise. Steps tagged `requiresApproval: true` wait for an operator decision in the dashboard before proceeding.
+
+The responder also produces a post-incident summary (`whatHappened`, `rootCause`, `impactAssessment`, `lessonsLearned`) and a set of follow-up actions with owners and deadlines.
+
+#### LLM Router
+
+All three agents call the LLM through `invoke_with_rotation()`. On a 429 rate limit, the router rotates to the next key silently. If all keys are exhausted, it waits `RATE_LIMIT_WAIT_SECONDS` (default 60s) then resets to the first key.
+
+#### RAG Knowledge Bases
+
+Each agent has its own knowledge folder. Drop `.pdf`, `.docx`, `.txt`, or `.md` files into the folder and restart the agent. On startup, the agent chunks, embeds, and caches the content. At inference time, the top-K most relevant chunks are retrieved via cosine similarity and injected into the prompt.
+
+| Agent | Folder | Recommended content |
+|---|---|---|
+| Classifier | `classifierKnowledge/` | Log format docs, field definitions, service catalogue, custom tagging rules |
+| Analyst | `analystKnowledge/` | Threat intel reports, CVE databases, MITRE ATT&CK, past incident notes |
+| Responder | `responderKnowledge/` | Remediation playbooks, runbooks, approved command templates, escalation policies |
+
+If a folder does not exist, the agent logs a warning and continues without RAG — it does not crash.
+
+---
+
+### Ledger
+
+The persistence layer. Subscribes to all Kafka topics and upserts each message into PostgreSQL as logs progress through pipeline stages. It is the only service that writes to the database. The Ledger also handles the ingestor's startup timestamp coordination request on the `actions` topic.
+
+---
+
+### Gateway
+
+A REST API that sits between PostgreSQL and the Dashboard. Read-only except for one write endpoint: `PATCH /remediation/{step_id}`, which records human approval or denial decisions and publishes them to the `actions` topic.
+
+The gateway does not connect to Kafka. It is a pure read layer on top of the database.
+
+---
+
+### Dashboard
+
+A React + TypeScript single-page application providing real-time monitoring and human-in-the-loop controls. Connects to the Gateway via REST on load.
+
+**Pages:**
+
+| Page | Description |
+|---|---|
+| Overview | KPI cards, severity distribution chart, incident trend (30 days), top services by log volume |
+| AI Analyst | Agentic chat interface with GPT-4.1. Has access to 15 tools mapped to every gateway endpoint — queries live data, not memory |
+| Log Stream | Live feed of `logs.unfiltered` from the database, auto-refreshing every 5 seconds |
+| Threats | Table of threat assessments from the Analyst agent with detail panel and Ask AI shortcut |
+| Incidents | Incidents table with full drill-down — post-incident summary, all remediation steps, follow-up actions |
+| Remediation | All remediation steps across all incidents with Approve / Deny controls for pending steps |
+| Agent Monitor | Derived health metrics for all three agents — processing counts, confidence averages, output breakdowns |
+
+---
+
+## Data Flow
+
+A single security event flows through the full pipeline in under 10 seconds from detection to a human-ready remediation plan.
+
+```
+14:32:11.000  Event appears in Elasticsearch index
+14:32:11.423  → logs.unfiltered     Raw document ingested and published by ingestor
+14:32:13.891  → logs.categories    Classified as security / critical (2.4s)
+14:32:19.234  → logs.solver_plan   Investigated, remediation plan with 4 steps ready (5.3s)
+14:32:19.500  → logs.solution      Responder publishes resolution record
+14:34:01.882  → actions            Operator approves steps via dashboard
+```
+
+```mermaid
+sequenceDiagram
+    participant Ingestor
+    participant Kafka
+    participant Classifier
+    participant Analyst
+    participant Responder
+    participant Ledger
+    participant DB as PostgreSQL
+    participant GW as Gateway
+    participant UI as Dashboard
+
+    Ingestor->>Kafka: publish to logs.unfiltered
+    Kafka->>Classifier: consume raw log
+    Classifier->>Kafka: publish to logs.categories
+    Kafka->>Analyst: consume classified log
+    Analyst->>Kafka: publish to logs.solver_plan
+    Kafka->>Responder: consume investigation
+    Responder->>Kafka: publish to logs.solution
+    Kafka->>Ledger: consume all topics
+    Ledger->>DB: upsert log row + related tables
+    UI->>GW: GET /threats, /incidents, etc.
+    GW->>DB: query
+    DB-->>GW: rows
+    GW-->>UI: JSON response
+    UI->>GW: PATCH /remediation/{id} (human approval)
+    GW->>Kafka: publish to actions
+```
+
+---
+
+## Kafka Topics
+
+All inter-service communication happens exclusively through these topics. No service calls another service directly.
 
 | Topic | Producer | Consumers | Content |
 |---|---|---|---|
-| `logs.unfiltered` | ingestor | classifier, ledger | Raw log documents as received from the source |
-| `logs.categories` | classifier | analyst, ledger | Log + classification (category, severity, tags, confidence, isCybersecurity) |
-| `logs.solver_plan` | analyst | responder, ledger | Log + classification + threat investigation + proposed remediation steps |
-| `logs.solution` | responder | ledger | Full resolution plan with per-step approval status, follow-up actions, post-incident summary |
-| `analytics` | classifier, analyst, responder | ledger | Heartbeats and per-event statistics from all three RAC agents |
-| `actions` | gateway, responder | responder, ledger | Human approval/denial decisions + ingestor timestamp coordination requests |
+| `logs.unfiltered` | Ingestor | Classifier, Ledger | Raw log documents as received from the source system |
+| `logs.categories` | Classifier | Analyst, Ledger | Logs enriched with `category`, `severity`, `tags`, and `isCybersecurity` |
+| `logs.solver_plan` | Analyst | Responder, Ledger | Security logs with full threat investigation and proposed remediation steps |
+| `logs.solution` | Responder | Ledger | Complete resolution records including immediate actions and post-incident summary |
+| `analytics` | Classifier, Analyst, Responder | Ledger | Heartbeats and per-event statistics from all agents |
+| `actions` | Gateway, Ledger | Ingestor, Ledger | Human approval/denial decisions and ingestor timestamp coordination |
 
-Topics are created automatically by the services that produce to them. You do not need to create them manually.
-
----
-
-## Data flow
-
-A single security event from detection to resolution:
-
-```
-T+0.0s   Raw log appears in Elasticsearch
-T+0.4s   ingestor polls ES, publishes to logs.unfiltered
-T+1.6s   classifier receives log, retrieves RAG context, calls GPT-4.1
-           → category: security, severity: critical, confidence: 95%
-           → publishes to logs.categories
-T+5.4s   analyst receives classification, retrieves RAG context, calls GPT-4.1
-           → attackVector, complexity, priority, proposedSteps
-           → publishes to logs.solver_plan
-T+9.5s   responder receives investigation, retrieves RAG context, calls GPT-4.1
-           → resolutionMode, immediateActions (auto + pending), followUpActions
-           → publishes to logs.solution
-           → ledger writes incident + remediation steps to PostgreSQL
-           → gateway serves to dashboard via REST
-         Human operator reviews plan in dashboard
-         Human approves step 3 via PATCH /remediation/3
-           → gateway publishes to actions topic
-           → responder executes step
-           → ledger updates status + executed_at
-         Incident resolved ✓
-```
+All topics are auto-created by agents via `ensure_topic()` if they do not already exist.
 
 ---
 
-## Technology stack
+## Database Schema
 
-| Layer | Technology |
+The `logs` table is progressively enriched as each service processes an event. Related tables are keyed by `log_id` and inserted when the Ledger consumes from the corresponding topic.
+
+Tables are created automatically by the Ledger on startup. You only need to create the `cybercontrol` database itself.
+
+---
+
+## Technology Stack
+
+| Component | Technology |
 |---|---|
-| Message broker | Apache Kafka 3.4 + Zookeeper |
-| Database | PostgreSQL 15 |
-| AI agents | Python 3.10+ · LangChain · GPT-4.1 (OpenAI) · Gemini 2.5 Flash (Google) |
-| RAG / embeddings | OpenAI `text-embedding-3-small` |
-| REST API | FastAPI · psycopg2 · Pydantic |
-| Frontend | React 18 · TypeScript · Vite · Recharts · Lucide React |
-| Kafka client | `kafka-python-ng` |
-| Container infra | Docker · Docker Compose |
-| Log source | Elasticsearch 8 · Kibana |
-| Monitoring | Redpanda Console |
+| AI agents | Python 3.10+, OpenAI GPT-4.1 (`gpt-4.1`), LangChain |
+| RAG embeddings | OpenAI `text-embedding-3-small` |
+| Message broker | Apache Kafka with `kafka-python-ng` |
+| Primary database | PostgreSQL |
+| Log source | Elasticsearch, GNS2, Mock Generator |
+| API layer | FastAPI, Pydantic, `psycopg2` |
+| Frontend | React , TypeScript, Vite |
+| Infrastructure | Docker, Docker Compose |
 
 ---
 
 ## Prerequisites
 
-Before cloning anything, make sure you have:
-
-- **Docker Desktop** (or Docker Engine + Docker Compose) — for all infrastructure
-- **Python 3.10+** — for ingestor, rac-agents, ledger, gateway
-- **Node.js 18+** and **npm** — for the dashboard
-- **Git**
-- At least one of:
-  - **OpenAI API key** — required for GPT-4.1 (LLM) and `text-embedding-3-small` (RAG embeddings)
-  - **Google Gemini API key** — optional LLM fallback (currently commented out in `llm_router.py`, easily re-enabled)
+- Docker and Docker Compose
+- An OpenAI API key
+- An Elasticsearch instance reachable from the ingestor (or use the mock adapter for local testing)
 
 ---
 
-## Quick start
+## Getting Started
 
-This gets the entire platform running locally in one go.
-
-**1. Clone all repositories**
+### 1. Create a workspace and clone all repositories
 
 ```bash
-git clone https://github.com/Admin-or-Admin/.github
-git clone https://github.com/Admin-or-Admin/ingestor
-git clone https://github.com/Admin-or-Admin/correlator
-git clone https://github.com/Admin-or-Admin/rac-agents
-git clone https://github.com/Admin-or-Admin/ledger
-git clone https://github.com/Admin-or-Admin/gateway
-git clone https://github.com/Admin-or-Admin/dashboard
+mkdir aurora && cd aurora
+
+git clone https://github.com/Admin-or-Admin/.github.git
+git clone https://github.com/Admin-or-Admin/ingestor.git
+git clone https://github.com/Admin-or-Admin/rac-agents.git
+git clone https://github.com/Admin-or-Admin/ledger.git
+git clone https://github.com/Admin-or-Admin/gateway.git
+git clone https://github.com/Admin-or-Admin/shared.git
+git clone https://github.com/Admin-or-Admin/dashboard.git
+git clone https://github.com/Admin-or-Admin/device_simulation.git
 ```
 
-**2. Start infrastructure**
+### 2. Copy the Docker Compose file
 
 ```bash
-cd .github
-docker compose up -d
+cp .github/docker-compose.yml .
 ```
 
-This starts Kafka, Zookeeper, PostgreSQL, Elasticsearch, Kibana, and Redpanda Console. Wait about 30 seconds for everything to be healthy.
+### 3. Create a `.env` file
 
-Verify:
-- Redpanda Console → http://localhost:8080
-- Kibana → http://localhost:5601
-- Elasticsearch → http://localhost:9200
+Create a `.env` file in the workspace root and add at minimum:
 
-**3. Configure environment variables**
+```env
+OPENAI_API_KEY=sk-...
+```
 
-Each service reads from a `.env` file. See the [Environment variables reference](#environment-variables-reference) section for all values. At minimum you need your `OPENAI_API_KEY` in `rac-agents/.env`.
+If you are deploying to a non-local environment, also configure any service URLs and broker addresses in `docker-compose.yml` and the Dashboard `.env` file.
+
+### 4. Start the full stack
 
 ```bash
-# rac-agents
-cp rac-agents/.env rac-agents/.env.backup
-# edit rac-agents/.env and set OPENAI_API_KEY
-
-# gateway
-echo "DATABASE_URL=postgresql://admin:secret@localhost:5432/cybercontrol" > gateway/.env
-
-# dashboard
-echo "VITE_API_URL=http://localhost:8000" > dashboard/.env
-echo "VITE_OPENAI_API_KEY=your_openai_key" >> dashboard/.env
+docker compose up --build -d
 ```
 
-**4. Set up Python virtual environments**
+**Recommended startup order** (when starting services manually outside Docker):
 
-```bash
-# ingestor
-cd ingestor && python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt && deactivate && cd ..
-
-# rac-agents
-cd rac-agents && python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt && deactivate && cd ..
-
-# ledger
-cd ledger && python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt && deactivate && cd ..
-
-# gateway
-cd gateway && python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt && deactivate && cd ..
+```
+1. docker compose up -f ./.github/docker-compose-externals-only.yml -d   # Kafka, PostgreSQL, Elasticsearch
+2. ledger                        # ready before ingestor starts
+3. ingestor                      # begins publishing to logs.unfiltered
+4. classifier                   # begins consuming logs.unfiltered
+5. analyst
+6. responder
+7. gateway
+8. dashboard
 ```
 
-**5. Install dashboard dependencies**
+### 5. Open the dashboard
 
-```bash
-cd dashboard && npm install && cd ..
+Dashboard is available at:
 ```
-
-**6. Start all services** (each in its own terminal tab)
-
-```bash
-# Terminal 1 — ledger
-cd ledger && source venv/bin/activate && python main.py
-
-# Terminal 2 — ingestor (mock mode)
-cd ingestor && source venv/bin/activate
-ENABLED_INGESTORS=mock_logs PYTHONPATH=. python -m ingestor.main
-
-# Terminal 3 — classifier
-cd rac-agents && source venv/bin/activate && python classifier.py
-
-# Terminal 4 — analyst
-cd rac-agents && source venv/bin/activate && python analyst.py
-
-# Terminal 5 — responder
-cd rac-agents && source venv/bin/activate && python responder.py
-
-# Terminal 6 — gateway
-cd gateway && source venv/bin/activate && python main.py
-
-# Terminal 7 — dashboard
-cd dashboard && npm run dev
+http://localhost:5173
 ```
+when the services are manually started, or at:
+```
+http://localhost:8080
+```
+when using Docker Compose.
 
-**7. Open the dashboard**
+Gateway API documentation (Swagger UI) is available at:
 
-→ http://localhost:5173
-
-Within a minute you should see security events appearing in the Log Stream page as the mock ingestor generates them and the pipeline classifies and investigates them.
+```
+http://localhost:8000/docs
+```
 
 ---
 
-## Service-by-service setup
+## Configuration Reference
 
-### Infrastructure (.github)
-
-**Repo:** [Admin-or-Admin/.github](https://github.com/Admin-or-Admin/.github)
-
-Contains the Docker Compose file that starts all platform infrastructure. Run it once and leave it running for the lifetime of your development session.
-
-```bash
-cd .github
-docker compose up -d       # start everything in the background
-docker compose ps          # check all containers are healthy
-docker compose down        # stop everything (data is preserved in volumes)
-docker compose down -v     # stop everything and wipe all data
-```
-
-**What it starts:**
-
-| Service | Port | Description |
+### Ingestor
+| Variable | Code Default | Description |
 |---|---|---|
-| Zookeeper | 2181 | Kafka coordination |
-| Kafka | 29092 | Message broker — use this port in all `.env` files |
-| Redpanda Console | 8080 | Kafka UI — browse topics and messages |
-| PostgreSQL | 5432 | Primary database — `db: cybercontrol, user: admin, pass: secret` |
-| Elasticsearch | 9200 | Log source and search |
-| Kibana | 5601 | Elasticsearch UI |
+| `ENABLED_INGESTORS` | `elasticsearch,mock_logs` | Comma-separated adapters to start. |
+| `ELASTIC_HOST` | `http://localhost:9200` | Elasticsearch URL including scheme and port. |
+| `ELASTIC_INDEX` | `mock-logs` | Index to read from/write to. |
+| `KAFKA_BROKERS` | `localhost:29092` | Kafka broker address. |
+| `KAFKA_TOPIC` | `logs.unfiltered` | Topic to publish events to. |
+| `POLL_INTERVAL` | `1.0` | Seconds between Elasticsearch polls. |
+| `MOCK_DELAY` | `0.5` | Base delay between mock log generation. |
+| `SYSLOG_PORT` | `1514` | UDP port for GNS3 syslog listener. |
+| `SIM_INTERVAL` | `1.0` | Seconds between simulated GNS3 network events. |
+| `GNS3_SIMULATION_ENABLED` | `true` | Simulate GNS3 network events. |
+| `CISCO_SYSLOG_PORT` | `1515` | Cisco UDP port for syslog listener. |
+| `CISCO_SIMULATION_ENABLED` | `true` | Simulate Cisco network events. |
+| `CISCO_SIM_INTERVAL` | `1.0` | Cisco simulation speed. |
+
+### RAC Agents
+| Variable | Code Default | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | — | OpenAI key for GPT-4 and embeddings. |
+| `KAFKA_BROKERS` | `localhost:29092` | Kafka broker address. |
+| `CLASSIFIER_MODE` | `manual` | `manual` (stdin) or `kafka`. |
+| `ANALYST_MODE` | `manual` | `manual` (reads pipeline) or `kafka`. |
+| `RESPONDER_MODE` | `manual` | `manual` (reads pipeline) or `kafka`. |
+| `MIN_CLASSIFICATION_CONFIDENCE` | `70` | Analyst drops logs below this confidence %. |
+| `CLASSIFIER_HEARTBEAT_INTERVAL` | `30` | Seconds between classifier heartbeats. |
+| `ANALYST_HEARTBEAT_INTERVAL` | `30` | Seconds between analyst heartbeats. |
+| `RESPONDER_HEARTBEAT_INTERVAL` | `30` | Seconds between responder heartbeats. |
+| `RATE_LIMIT_WAIT_SECONDS` | `60` | Wait time when LLM is rate limited. |
+| `KNOWLEDGE_DIR` | `classifierKnowledge` | RAG folder for the classifier. |
+| `KNOWLEDGE_CHUNK_SIZE` | `500` | Words per chunk (Classifier). |
+| `KNOWLEDGE_CHUNK_OVERLAP` | `50` | Overlap (Classifier). |
+| `KNOWLEDGE_TOP_K` | `5` | Chunks retrieved (Classifier). |
+| `ANALYST_KNOWLEDGE_DIR` | `analystKnowledge` | RAG folder for the analyst. |
+| `ANALYST_KNOWLEDGE_CHUNK_SIZE`| `500` | Words per chunk (Analyst). |
+| `ANALYST_KNOWLEDGE_TOP_K` | `5` | Chunks retrieved (Analyst). |
+| `RESPONDER_KNOWLEDGE_DIR` | `responderKnowledge` | RAG folder for the responder. |
+| `RESPONDER_KNOWLEDGE_CHUNK_SIZE`| `500` | Words per chunk (Responder). |
+| `RESPONDER_KNOWLEDGE_TOP_K` | `5` | Chunks retrieved (Responder). |
+
+### Ledger
+| Variable | Code Default | Description |
+|---|---|---|
+| `KAFKA_BROKERS` | `192.168.1.6:29092` | Kafka broker address. |
+| `KAFKA_GROUP_ID` | `ledger-group` | Consumer group ID. |
+| `DATABASE_URL` | `postgresql://admin:secret@localhost:5432/cybercontrol` | PostgreSQL connection string. |
+| `LOG_LEVEL` | `INFO` | Logging verbosity. |
+| `SCRAPE_FROM_BEGINNING` | `false` | If true, processes all Kafka history on start. |
+| `DROP_DB` | `false` | If true, wipes the database on start. |
+| `EXCLUDE_TOPICS` | `""` | Comma-separated list of topics to ignore. |
+
+### Gateway
+| Variable | Code Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `postgresql://admin:secret@localhost:5432/cybercontrol` | PostgreSQL connection string. |
+| `PORT` | `8000` | API port. |
+| `HOST` | `0.0.0.0` | API host. |
+| `APP_TITLE` | `Aurora Gateway` | Swagger documentation title. |
+| `APP_VERSION` | `1.0.0` | Swagger documentation version. |
+| `OPENAI_API_KEY` | — | OpenAI key for the AI Analyst chat. |
+| `OPENAI_MODEL` | `gpt-4.1` | Model used for chat/analysis. |
+| `CORS_ORIGINS` | `http://localhost:5173,...` | Comma-separated list of allowed origins. |
+
+### Dashboard
+| Variable | Code Default | Description |
+|---|---|---|
+| `VITE_API_URL` | `http://localhost:8000` | URL of the running Gateway. |
+
 
 ---
 
-### ingestor
+# Aurora API Reference
 
-**Repo:** [Admin-or-Admin/ingestor](https://github.com/Admin-or-Admin/ingestor)  
-**Publishes to:** `logs.unfiltered`
-
-Pulls logs from external sources and streams them into the pipeline. Uses an adapter pattern — each source is one file.
-
-**Available adapters:**
-
-| Adapter | `ENABLED_INGESTORS` value | What it does |
+### Logs
+| Method | Endpoint | Description |
 |---|---|---|
-| Elasticsearch | `elasticsearch` | Polls an ES index for new documents using a timestamp cursor. Coordinates with ledger on startup to resume from where it left off |
-| Mock Generator | `mock_logs` | Generates synthetic security events (SQL injection, XSS, brute force, etc.) and writes them to Elasticsearch. Use this for local development |
-| GNS3 | `gns3` | Simulates Cisco network device events + listens on UDP port 1514 for real syslog from GNS3 nodes |
+| GET | `/logs` | Paginated log list. Optional `?service_name=` filter |
+| GET | `/logs/{log_id}` | Retrieve a specific raw log by its ID |
+| GET | `/logs/{log_id}/details` | Log + classification + threat assessment |
+| GET | `/logs/{log_id}/full` | Full record — log, classification, threat, remediation, and incident |
 
-**Setup:**
+### Classifications
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/classifications` | Paginated list of all classifications |
+| GET | `/classifications/{log_id}` | Classification for a specific log |
+
+### Threats
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/threats` | Paginated list of all threat assessments |
+| GET | `/threats/{log_id}` | Threat assessment for a specific log |
+
+### Incidents
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/incidents` | Paginated list of all incidents (ordered by `resolved_at`) |
+| GET | `/incidents/{incident_id}` | Single incident details |
+| GET | `/incidents/{incident_id}/remediation` | All remediation steps for the incident's log |
+| GET | `/incidents/{incident_id}/actions` | All follow-up actions for the incident |
+| PATCH | `/incidents/{incident_id}` | Update status, executive summary, or outcome |
+| POST | `/incidents/{incident_id}/comments` | Add a manual analyst comment to an incident |
+
+### Remediation
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/remediation` | Paginated list of all remediation steps across all logs |
+| GET | `/remediation/log/{log_id}` | All steps for a specific log, ordered by step number |
+| PATCH | `/remediation/{step_id}` | Approve or deny a step. Body: `{"status": "approved"}` or `{"status": "denied"}` |
+
+### Follow-up Actions
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/follow-ups` | Paginated list of all follow-up actions |
+| GET | `/follow-ups/incident/{incident_id}` | All follow-up actions for a specific incident |
+
+### Stats
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/stats/severity` | Classification counts grouped by severity |
+| GET | `/stats/incidents/trend` | Incidents resolved per day (last 30 days) |
+| GET | `/stats/services` | Log count per service name |
+| GET | `/stats/top-attackers` | Entities with the most associated incidents |
+| GET | `/stats/summary` | Aggregated dashboard summary (total logs, incidents, etc.) |
+
+### AI Analyst (Chats)
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/chats/completion` | Simple LLM chat with optional log context |
+| POST | `/chats/analyze` | Advanced Analyst Agent with tool-calling capabilities |
+| GET | `/chats` | List all chat sessions |
+| POST | `/chats` | Create a new chat session |
+| GET | `/chats/{session_id}` | Get session details and full message history |
+| POST | `/chats/{session_id}/messages` | Add a user/assistant message to a session |
+| DELETE| `/chats/{session_id}` | Delete a chat session |
+
+### System Health
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/health` | Status of all Aurora microservices and database connection |
+| GET | `/metrics` | High-level system performance and volume metrics |
+
+**Pagination:** All list endpoints (e.g., `/logs`, `/incidents`) accept `?limit=100&offset=0` query parameters (max limit 1000).
+
+
+---
+
+## Running Services Individually
+
+### Ingestor (Python)
 
 ```bash
 cd ingestor
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
+cp .env.example .env   # fill in your values
 
-**`.env`:**
-
-```properties
-ENABLED_INGESTORS=elasticsearch,mock_logs
-ELASTIC_HOST=http://localhost:9200
-ELASTIC_INDEX=mock-logs
-KAFKA_BROKERS=localhost:29092
-KAFKA_TOPIC=logs.unfiltered
-POLL_INTERVAL=1.0
-MOCK_DELAY=0.5
-SYSLOG_PORT=1514
-SIM_INTERVAL=1.0
-```
-
-**Run:**
-
-```bash
-# Must be run as a module from the parent directory of ingestor/
+# Run from the parent directory so shared/ imports resolve
 PYTHONPATH=. python -m ingestor.main
 
-# Run only mock logs (fastest for local dev)
+# Run with a specific adapter set
 ENABLED_INGESTORS=mock_logs PYTHONPATH=. python -m ingestor.main
+ENABLED_INGESTORS=gns3 PYTHONPATH=. python -m ingestor.main
 ```
 
-> **Note on Elasticsearch client and TLS:** the ES Python client v8+ defaults to HTTPS. If you see SSL errors against the local Docker ES instance, ensure `ELASTIC_HOST` starts with `http://`, not `https://`.
-
----
-
-### correlator
-
-**Repo:** [Admin-or-Admin/correlator](https://github.com/Admin-or-Admin/correlator)  
-**Consumes:** `logs.unfiltered`  
-**Publishes:** enriched events back to `logs.unfiltered`
-
-Sits between the ingestor and the classifier. Aggregates events from multiple sources, detects attack patterns across events (e.g. a port scan followed by a failed login from the same IP), and enriches each event with correlation metadata before it reaches the classifier.
-
-See the repository README for setup instructions specific to the correlator.
-
----
-
-### rac-agents (classifier · analyst · responder)
-
-**Repo:** [Admin-or-Admin/rac-agents](https://github.com/Admin-or-Admin/rac-agents)
-
-Three agents, one repository. Each is a standalone Python process. RAC stands for **Recognise · Analyse · Counter**.
-
-**Setup:**
+### RAC Agents (Python)
 
 ```bash
 cd rac-agents
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env .env.backup && cp .env.example .env   # fill in keys and Kafka address
+
 mkdir -p classifierKnowledge analystKnowledge responderKnowledge
+
+# Start each agent in a separate terminal (all require venv activated)
+python classifier.py
+python analyst.py
+python responder.py
 ```
 
-**`.env`:**
-
-```properties
-# LLM keys — at least OPENAI_API_KEY is required
-OPENAI_API_KEY=sk-...
-GEMINI_API_KEY_1=AIza...        # optional, uncomment in llm_router.py to use
-GEMINI_API_KEY_2=AIza...        # optional second Gemini key for rotation
-
-# Kafka
-KAFKA_BROKERS=localhost:29092
-KAFKA_GROUP_ID=classifier-group
-
-# Agent modes: 'kafka' for production, 'manual' for testing single logs
-CLASSIFIER_MODE=kafka
-ANALYST_MODE=kafka
-RESPONDER_MODE=kafka
-
-# Confidence threshold — analyst skips logs below this %
-# Set to 0 to pass everything through
-MIN_CLASSIFICATION_CONFIDENCE=0
-
-# LLM rate limit behaviour
-RATE_LIMIT_WAIT_SECONDS=60
-
-# Heartbeat intervals in seconds
-CLASSIFIER_HEARTBEAT_INTERVAL=30
-ANALYST_HEARTBEAT_INTERVAL=30
-RESPONDER_HEARTBEAT_INTERVAL=30
-
-# RAG — classifier
-KNOWLEDGE_DIR=classifierKnowledge
-KNOWLEDGE_CHUNK_SIZE=500
-KNOWLEDGE_CHUNK_OVERLAP=50
-KNOWLEDGE_TOP_K=5
-
-# RAG — analyst
-ANALYST_KNOWLEDGE_DIR=analystKnowledge
-ANALYST_KNOWLEDGE_CHUNK_SIZE=500
-ANALYST_KNOWLEDGE_CHUNK_OVERLAP=50
-ANALYST_KNOWLEDGE_TOP_K=5
-
-# RAG — responder
-RESPONDER_KNOWLEDGE_DIR=responderKnowledge
-RESPONDER_KNOWLEDGE_CHUNK_SIZE=500
-RESPONDER_KNOWLEDGE_CHUNK_OVERLAP=50
-RESPONDER_KNOWLEDGE_TOP_K=5
-```
-
-**Run (each in its own terminal):**
-
-```bash
-cd rac-agents && source venv/bin/activate
-
-python classifier.py    # listens on logs.unfiltered
-python analyst.py       # listens on logs.categories
-python responder.py     # listens on logs.solver_plan
-```
-
-**LLM rotation:** the router tries keys in order — Gemini key 1 → Gemini key 2 → GPT-4.1. On a 429 it rotates automatically. If all keys are exhausted it waits `RATE_LIMIT_WAIT_SECONDS` and resets. Currently only GPT-4.1 is active; Gemini keys are present in `.env` but commented out in `llm_router.py`. To enable them, uncomment the Gemini client blocks in `llm_router.py`.
-
-**RAG knowledge bases:**
-
-Drop any `.pdf`, `.docx`, `.txt`, or `.md` file into the relevant folder and restart the agent. It will embed on first run and cache the result — subsequent restarts load from cache instantly if nothing has changed.
-
-| Agent | Folder | What to put here |
-|---|---|---|
-| classifier | `classifierKnowledge/` | Internal log format docs, service catalogue, categorisation rules, compliance requirements |
-| analyst | `analystKnowledge/` | Threat intelligence, CVE databases, MITRE ATT&CK descriptions, past incident notes |
-| responder | `responderKnowledge/` | Remediation playbooks, approved command lists, runbooks, escalation policies |
-
-**Manual mode (testing without Kafka):**
-
-Set `CLASSIFIER_MODE=manual`, `ANALYST_MODE=manual`, `RESPONDER_MODE=manual` in `.env`, then run each agent one at a time. The classifier reads from stdin; each subsequent agent reads from `pipeline.json` which the previous one wrote.
-
----
-
-### ledger
-
-**Repo:** [Admin-or-Admin/ledger](https://github.com/Admin-or-Admin/ledger)  
-**Consumes:** all six Kafka topics  
-**Writes to:** PostgreSQL
-
-The only service that writes to the database. Subscribes to `logs.unfiltered`, `logs.categories`, `logs.solver_plan`, `logs.solution`, `analytics`, and `actions` and progressively enriches database rows as each log moves through the pipeline.
-
-Also handles the ingestor's startup timestamp request — it responds to `get_last_unfiltered_timestamp` messages on the `actions` topic so the ingestor knows where to resume polling after a restart.
-
-**Setup:**
+### Ledger (Python)
 
 ```bash
 cd ledger
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # fill in DATABASE_URL and KAFKA_BROKERS
+
+# Create the database (skip if using Docker Compose — it's created automatically)
+psql -U admin -c "CREATE DATABASE cybercontrol;"
+
+python main.py
 ```
 
-The database and all tables are created automatically on first startup. You only need to ensure the PostgreSQL container is running and the `cybercontrol` database exists:
-
-```bash
-# If using the Docker Compose setup this is already done.
-# If connecting to a separate PostgreSQL instance:
-psql -U admin -h localhost -c "CREATE DATABASE cybercontrol;"
-```
-
-**`.env`:**
-
-```properties
-KAFKA_BROKERS=localhost:29092
-KAFKA_GROUP_ID=ledger-group
-DATABASE_URL=postgresql://admin:secret@localhost:5432/cybercontrol
-```
-
-**Run:**
-
-```bash
-cd ledger && source venv/bin/activate && python main.py
-```
-
----
-
-### gateway
-
-**Repo:** [Admin-or-Admin/gateway](https://github.com/Admin-or-Admin/gateway)  
-**Reads from:** PostgreSQL  
-**Serves:** REST API on port 8000
-
-The FastAPI service that sits between the database and the dashboard. The only service that reads from PostgreSQL externally. All dashboard data comes through here.
-
-**Setup:**
+### Gateway (Python)
 
 ```bash
 cd gateway
 python -m venv venv && source venv/bin/activate
+
+# Install shared library first
+pip install ./shared/
 pip install -r requirements.txt
+
+cp .env.example .env   # fill in DATABASE_URL and OPENAI_API_KEY
+python main.py
 ```
 
-**`.env`:**
-
-```properties
-DATABASE_URL=postgresql://admin:secret@localhost:5432/cybercontrol
-PORT=8000
-HOST=0.0.0.0
-```
-
-**Run:**
-
-```bash
-cd gateway && source venv/bin/activate && python main.py
-```
-
-The API is available at http://localhost:8000. Interactive docs at http://localhost:8000/docs.
-
-**Full API reference:**
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/logs` | Paginated log list. Optional `?service_name=` filter |
-| GET | `/logs/{id}` | Single log |
-| GET | `/logs/{id}/details` | Log + classification + threat assessment |
-| GET | `/logs/{id}/full` | Log + classification + threat + incident + remediation |
-| GET | `/classifications` | All classifications |
-| GET | `/classifications/{log_id}` | Classification for a specific log |
-| GET | `/threats` | All threat assessments |
-| GET | `/threats/{log_id}` | Threat assessment for a specific log |
-| GET | `/incidents` | All incidents |
-| GET | `/incidents/{id}` | Single incident |
-| GET | `/incidents/{id}/remediation` | Remediation steps for an incident |
-| GET | `/incidents/{id}/actions` | Follow-up actions for an incident |
-| GET | `/remediation` | All remediation steps |
-| GET | `/remediation/log/{log_id}` | Remediation steps for a specific log |
-| PATCH | `/remediation/{step_id}` | Update step status — body: `{"status": "approved"}` or `{"status": "denied"}` |
-| GET | `/follow-ups` | All follow-up actions |
-| GET | `/follow-ups/incident/{id}` | Follow-up actions for a specific incident |
-| GET | `/stats/severity` | Severity distribution counts |
-| GET | `/stats/incidents/trend` | Incident count over time |
-| GET | `/stats/services` | Per-service log counts |
-
----
-
-### dashboard
-
-**Repo:** [Admin-or-Admin/dashboard](https://github.com/Admin-or-Admin/dashboard)  
-**Connects to:** gateway at `VITE_API_URL`  
-**Runs on:** http://localhost:5173
-
-The operator-facing React application. Six pages.
-
-**Setup:**
+### Dashboard (Node.js)
 
 ```bash
 cd dashboard
 npm install
+cp .env.example .env   # set VITE_API_URL=http://localhost:8000
+npm run dev
 ```
 
-**`.env`:**
+---
 
-```properties
-VITE_API_URL=http://localhost:8000
-VITE_OPENAI_API_KEY=sk-...
+## Manual Mode (No Kafka)
+
+Set all three agent mode variables to `manual` in `.env` and run them sequentially in a single terminal to test a specific log end-to-end without Kafka.
+
+```env
+CLASSIFIER_MODE=manual
+ANALYST_MODE=manual
+RESPONDER_MODE=manual
 ```
-
-**Run:**
 
 ```bash
-cd dashboard && npm run dev
+# Step 1 — classify a log interactively
+python classifier.py
+LOG > 2026-01-15 14:23:01 Failed login attempt for user admin from 192.168.1.105
+# Classification is printed and written to pipeline.json
+
+# Step 2 — investigate
+python analyst.py
+# Reads pipeline.json, investigates if it passes filters, writes investigation back
+
+# Step 3 — generate remediation plan
+python responder.py
+# Reads pipeline.json, prints the full resolution plan
 ```
 
-**Pages:**
-
-| Page | Route | Description |
-|---|---|---|
-| Overview | `/` | KPI tiles, severity chart, incident trend, services breakdown |
-| Log Stream | `/logs` | Live feed of `logs.unfiltered` events, auto-refreshes every 5s |
-| Threats | `/threats` | Threat assessments table with detail panel and Ask AI button |
-| Incidents | `/incidents` | Incidents table with drill-down and Ask AI button |
-| Remediation | `/remediation` | Tabbed remediation steps — approve or deny each step |
-| Agent Monitor | `/agents` | Derived agent health metrics from the analytics topic |
-| AI Analyst | `/analyst` | Agentic chat interface powered by GPT-4.1 with 15 tools mapped to all gateway endpoints |
-
-**AI Analyst:** the chat interface runs a GPT-4.1 agentic loop (up to 10 iterations per turn) with tools for every gateway endpoint. It can be opened directly from the Threats and Incidents pages via the **Ask AI** button, which pre-populates an investigation query for the selected event.
+`pipeline.json` is the shared state file for manual mode. It accumulates all pipeline stages in a single file and is listed in `.gitignore`. Never commit it.
 
 ---
 
-## Environment variables reference
+## Extending Aurora
 
-Complete reference for every variable across all services.
+### Adding a New Log Source
 
-### Infrastructure
-
-| Variable | Value | Description |
-|---|---|---|
-| PostgreSQL | `postgresql://admin:secret@localhost:5432/cybercontrol` | Default connection used by ledger and gateway |
-| Kafka | `localhost:29092` | Default broker address for all services |
-
-### ingestor
-
-| Variable | Default | Description |
-|---|---|---|
-| `ENABLED_INGESTORS` | `elasticsearch,mock_logs` | Comma-separated list of adapters to run |
-| `ELASTIC_HOST` | `http://localhost:9200` | Elasticsearch URL including scheme |
-| `ELASTIC_INDEX` | `mock-logs` | Index to read from / write to |
-| `KAFKA_BROKERS` | `localhost:29092` | Kafka broker address |
-| `KAFKA_TOPIC` | `logs.unfiltered` | Topic to publish to |
-| `POLL_INTERVAL` | `1.0` | Seconds between ES polls when caught up |
-| `MOCK_DELAY` | `0.5` | Base delay between mock event generation |
-| `SYSLOG_PORT` | `1514` | UDP port for GNS3 syslog listener |
-| `SIM_INTERVAL` | `1.0` | Seconds between simulated GNS3 events |
-
-### rac-agents
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | required | OpenAI key — GPT-4.1 (LLM) + text-embedding-3-small (RAG) |
-| `GEMINI_API_KEY_1` | optional | First Gemini key (uncomment in llm_router.py to activate) |
-| `GEMINI_API_KEY_2` | optional | Second Gemini key for rotation |
-| `KAFKA_BROKERS` | `localhost:29092` | Kafka broker address |
-| `KAFKA_GROUP_ID` | `classifier-group` | Consumer group — change only to force full replay |
-| `CLASSIFIER_MODE` | `manual` | `kafka` for production, `manual` for stdin testing |
-| `ANALYST_MODE` | `manual` | `kafka` or `manual` |
-| `RESPONDER_MODE` | `manual` | `kafka` or `manual` |
-| `MIN_CLASSIFICATION_CONFIDENCE` | `70` | Analyst skips logs below this %. Set to `0` to disable |
-| `RATE_LIMIT_WAIT_SECONDS` | `60` | Wait time when all LLM keys are rate limited |
-| `CLASSIFIER_HEARTBEAT_INTERVAL` | `30` | Seconds between classifier heartbeats |
-| `ANALYST_HEARTBEAT_INTERVAL` | `30` | Seconds between analyst heartbeats |
-| `RESPONDER_HEARTBEAT_INTERVAL` | `30` | Seconds between responder heartbeats |
-| `KNOWLEDGE_DIR` | `classifierKnowledge` | Classifier RAG folder |
-| `KNOWLEDGE_CHUNK_SIZE` | `500` | Words per chunk |
-| `KNOWLEDGE_CHUNK_OVERLAP` | `50` | Overlap between chunks |
-| `KNOWLEDGE_TOP_K` | `5` | Chunks retrieved per call |
-| `ANALYST_KNOWLEDGE_DIR` | `analystKnowledge` | Analyst RAG folder |
-| `ANALYST_KNOWLEDGE_CHUNK_SIZE` | `500` | |
-| `ANALYST_KNOWLEDGE_CHUNK_OVERLAP` | `50` | |
-| `ANALYST_KNOWLEDGE_TOP_K` | `5` | |
-| `RESPONDER_KNOWLEDGE_DIR` | `responderKnowledge` | Responder RAG folder |
-| `RESPONDER_KNOWLEDGE_CHUNK_SIZE` | `500` | |
-| `RESPONDER_KNOWLEDGE_CHUNK_OVERLAP` | `50` | |
-| `RESPONDER_KNOWLEDGE_TOP_K` | `5` | |
-
-### ledger
-
-| Variable | Default | Description |
-|---|---|---|
-| `KAFKA_BROKERS` | `localhost:29092` | Kafka broker address |
-| `KAFKA_GROUP_ID` | `ledger-group` | Consumer group — change only to force full replay |
-| `DATABASE_URL` | `postgresql://admin:secret@localhost:5432/cybercontrol` | PostgreSQL connection string |
-
-### gateway
-
-| Variable | Default | Description |
-|---|---|---|
-| `DATABASE_URL` | `postgresql://admin:secret@localhost:5432/cybercontrol` | PostgreSQL connection string |
-| `PORT` | `8000` | Port to listen on |
-| `HOST` | `0.0.0.0` | Bind address |
-
-### dashboard
-
-| Variable | Default | Description |
-|---|---|---|
-| `VITE_API_URL` | `http://localhost:8000` | Gateway base URL |
-| `VITE_OPENAI_API_KEY` | required | OpenAI key for the AI Analyst chat in the browser |
-
----
-
-## Database schema
-
-All tables are created by the ledger on startup.
-
-```sql
--- Core log record, progressively enriched through the pipeline
-CREATE TABLE logs (
-    id               VARCHAR PRIMARY KEY,     -- trace.id from the log event
-    timestamp        TIMESTAMPTZ,
-    message          TEXT,
-    service_name     VARCHAR,
-    raw_severity     VARCHAR,
-    user_id          VARCHAR,
-    http_status      INTEGER,
-    process_pid      INTEGER,
-    trace_id         VARCHAR,
-    processing_stage VARCHAR,                 -- unfiltered → classified → investigated → resolved
-    created_at       TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Written by ledger when it receives from logs.categories
-CREATE TABLE classifications (
-    log_id           VARCHAR PRIMARY KEY REFERENCES logs(id),
-    category         VARCHAR,                 -- security / infrastructure / application / deployment
-    severity         VARCHAR,                 -- critical / high / medium / low / info
-    is_cybersecurity BOOLEAN,
-    confidence       INTEGER,                 -- 0–100
-    reasoning        TEXT,
-    tags             TEXT[],
-    created_at       TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Written by ledger when it receives from logs.solver_plan
-CREATE TABLE threat_assessments (
-    log_id            VARCHAR PRIMARY KEY REFERENCES logs(id),
-    attack_vector     TEXT,
-    ai_suggestion     TEXT,
-    complexity        VARCHAR,                -- simple / complex
-    recurrence_rate   INTEGER,               -- 0–100 probability within 24h
-    confidence        INTEGER,
-    auto_fixable      BOOLEAN,
-    requires_approval BOOLEAN,
-    priority          INTEGER,               -- 1–5
-    notify_teams      TEXT[],
-    created_at        TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Written by ledger when it receives from logs.solution
-CREATE TABLE incidents (
-    incident_id       VARCHAR PRIMARY KEY,
-    log_id            VARCHAR REFERENCES logs(id),
-    resolution_mode   VARCHAR,               -- autonomous / guided
-    executive_summary TEXT,
-    outcome           VARCHAR,
-    resolved_by       VARCHAR,
-    what_happened     TEXT,
-    impact_assessment TEXT,
-    root_cause        TEXT,
-    lessons_learned   TEXT,
-    resolved_at       TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ DEFAULT NOW()
-);
-
--- One row per step in resolution.immediateActions
-CREATE TABLE remediation_steps (
-    id                SERIAL PRIMARY KEY,
-    log_id            VARCHAR REFERENCES logs(id),
-    step_number       INTEGER,
-    title             VARCHAR,
-    description       TEXT,
-    command           TEXT,
-    risk              VARCHAR,               -- low / medium / high
-    estimated_time    VARCHAR,
-    rollback          TEXT,
-    auto_execute      BOOLEAN,
-    requires_approval BOOLEAN,
-    status            VARCHAR,               -- auto / pending / approved / denied
-    executed_at       TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ DEFAULT NOW()
-);
-
--- One row per item in resolution.followUpActions
-CREATE TABLE follow_up_actions (
-    id           SERIAL PRIMARY KEY,
-    incident_id  VARCHAR REFERENCES incidents(incident_id),
-    title        VARCHAR,
-    description  TEXT,
-    owner        VARCHAR,
-    deadline     VARCHAR,                    -- immediate / 24h / 48h / 1 week
-    created_at   TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Raw analytics events from all three RAC agents
-CREATE TABLE analytics (
-    id         SERIAL PRIMARY KEY,
-    agent      VARCHAR,                      -- classifier / analyst / responder
-    event      VARCHAR,                      -- heartbeat / classification_produced / etc.
-    payload    JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
-
-A single event can be traced through every table using its `trace.id` which becomes `logs.id`. The `processing_stage` on the `logs` row tells you how far through the pipeline it has progressed at any point in time.
-
----
-
-## Recommended start order
-
-Start services in this order to ensure each one has what it depends on before coming up.
-
-```
-1.  docker compose up -d          (.github — Kafka, PostgreSQL, Elasticsearch)
-
-    Wait ~30 seconds for containers to be healthy.
-
-2.  python main.py                (ledger — must be up before ingestor so it can
-                                   respond to the timestamp coordination request)
-
-3.  PYTHONPATH=. python -m ingestor.main   (ingestor — starts publishing to Kafka)
-
-4.  python classifier.py          (rac-agents — begins consuming logs.unfiltered)
-
-5.  python analyst.py             (rac-agents — begins consuming logs.categories)
-
-6.  python responder.py           (rac-agents — begins consuming logs.solver_plan)
-
-7.  python main.py                (gateway — begins serving the API)
-
-8.  npm run dev                   (dashboard — opens at http://localhost:5173)
-```
-
-Services 4–8 can technically start in any order since Kafka buffers messages, but the order above produces the cleanest startup logs. The ingestor (step 3) will wait up to 10 seconds for a ledger response on startup and fall back to epoch if the ledger is not yet ready — so the ledger should ideally be up first.
-
----
-
-## Adding a new log source
-
-The ingestor uses an adapter pattern. To add a new source:
-
-**1. Create `ingestor/adapters/your_source_adapter.py`:**
+Create a new adapter in `ingestor/adapters/`:
 
 ```python
 from .base import BaseAdapter
 from shared.kafka_client import AuroraProducer
 import os, time
 
-class YourSourceAdapter(BaseAdapter):
-    def __init__(self, name="YourSource"):
+class SplunkAdapter(BaseAdapter):
+    def __init__(self, name="Splunk"):
         super().__init__(name)
         self.kafka_brokers = [os.getenv("KAFKA_BROKERS", "localhost:29092")]
         self.kafka_topic   = os.getenv("KAFKA_TOPIC", "logs.unfiltered")
@@ -848,52 +659,135 @@ class YourSourceAdapter(BaseAdapter):
     def run(self):
         producer = AuroraProducer(self.kafka_brokers)
         producer.ensure_topic(self.kafka_topic)
-
         while True:
-            for event in fetch_from_your_source():
-                producer.send_log(self.kafka_topic, {
-                    "@timestamp":  event["time"],
-                    "message":     event["message"],
-                    "service.name": event["service"],
-                    "trace.id":    event["id"],
-                    "log.level":   event["level"],
-                })
+            events = fetch_from_splunk()
+            for event in events:
+                producer.send_log(self.kafka_topic, event)
             producer.flush()
             time.sleep(5)
 ```
 
-**2. Register it in `ingestor/main.py`:**
+Register it in `ingestor/main.py` under `ADAPTER_MAP`, then enable it with `ENABLED_INGESTORS=splunk` in `.env`. Every published document must include at minimum `@timestamp`, `message`, and `service.name`.
 
-```python
-from ingestor.adapters.your_source_adapter import YourSourceAdapter
+### Adding a New Gateway Endpoint
 
-ADAPTER_MAP = {
-    "elasticsearch": ElasticsearchAdapter,
-    "gns3":          GNS3Adapter,
-    "mock_logs":     MockLogsAdapter,
-    "your_source":   YourSourceAdapter,   # add this line
-}
-```
+1. Add a Pydantic schema in `gateway/schemas.py`
+2. Create a route file in `gateway/routes/`
+3. Register the router in `gateway/main.py` with `app.include_router()`
 
-**3. Enable it:**
+### Adding Agent Knowledge
 
-```properties
-ENABLED_INGESTORS=your_source
-```
-
-The minimum fields every event must include are `@timestamp`, `message`, `service.name`, and `trace.id`. All other fields are optional. Nothing else in the pipeline needs to change.
+Copy files into the relevant knowledge folder and restart the agent. Supported formats: `.pdf`, `.docx`, `.txt`, `.md`. The agent will re-embed only changed files on the next startup.
 
 ---
 
-## Per-repository documentation
+## Project Structure
 
-Each repository has its own detailed README covering setup, configuration, internals, and extension points.
+```
+aurora/                            — workspace root
+  docker-compose.yml               — full stack orchestration
 
-| Repository | README covers |
+  ingestor/
+    main.py                        — adapter registry and startup coordination
+    adapters/
+      base.py                      — BaseAdapter interface
+      elasticsearch_adapter.py     — production log source with cursor-based polling
+      mock_logs_adapter.py         — synthetic log generator for testing
+      gns3_adapter.py              — UDP syslog listener for GNS3/Network events
+      cisco_adapter.py             — Cisco-specific syslog listener and simulator
+    Dockerfile                     — container definition
+    requirements.txt               — python dependencies
+
+  rac-agents/
+    classifier.py                  — Agent 1: classifies raw logs
+    analyst.py                     — Agent 2: investigates security events
+    responder.py                   — Agent 3: generates remediation plans
+    llm_router.py                  — LLM strategy and key rotation
+    kafka_client.py                — specialized producer/consumer wrappers
+    classifierKnowledge_loader.py  — RAG loader for the classifier
+    analystKnowledge_loader.py     — RAG loader for the analyst
+    responderKnowledge_loader.py   — RAG loader for the responder
+    classifierKnowledge/           — directory for classifier RAG data
+    analystKnowledge/              — directory for analyst RAG data
+    responderKnowledge/            — directory for responder RAG data
+    pipeline.json                  — local shared state (manual mode)
+    Dockerfile                     — container definition
+    requirements.txt               — python dependencies
+
+  ledger/
+    main.py                        — unified Kafka consumer loop
+    config.py                      — configuration and environment management
+    database.py                    — PostgreSQL schema and DB operations
+    handlers.py                    — logic for processing specific topic messages
+    Dockerfile                     — container definition
+    requirements.txt               — python dependencies
+
+  gateway/
+    main.py                        — FastAPI application and router setup
+    config.py                      — application configuration
+    database.py                    — database connection and query execution
+    schemas.py                     — Pydantic models (DTOs)
+    core/
+      crud.py                      — base CRUD operations
+    routes/
+      logs.py                      — log retrieval endpoints
+      classifications.py           — classification endpoints
+      threats.py                   — threat assessment endpoints
+      incidents.py                 — incident management endpoints
+      remediation.py               — remediation step endpoints
+      follow_ups.py                — follow-up action endpoints
+      stats.py                     — metrics and dashboard stats endpoints
+      chats.py                     — AI Analyst chat and tool-calling endpoints
+      health.py                    — system health and metrics endpoints
+    Dockerfile                     — container definition
+    requirements.txt               — python dependencies
+
+  shared/                          — local python library used by all services
+    kafka_client.py                — shared Kafka utilities
+    elastic_client.py              — shared Elasticsearch client
+    logger.py                      — standardized logging configuration
+    setup.py                       — installation script for internal use
+
+  dashboard/
+    src/
+      App.tsx                      — main layout and routing
+      main.tsx                     — application entry point
+      index.css                    — global styles and design system
+      lib/
+        api.ts                     — API client and TypeScript interfaces
+      components/
+        ui.tsx                     — reusable UI components
+        ChatSidebar.tsx            — sidebar for AI Analyst chat history
+      pages/
+        Overview.tsx               — dashboard landing page
+        LogStream.tsx              — real-time log viewer
+        Threats.tsx                — threat assessment list
+        Incidents.tsx              — incident management
+        Remediation.tsx            — remediation workflow
+        AgentMonitor.tsx           — real-time agent status
+        AIAnalyst.tsx              — interactive AI agent interface
+        AgentChat.tsx              — log-specific chat interface
+    Dockerfile                     — container definition
+    package.json                   — frontend dependencies and scripts
+    vite.config.ts                 — build configuration
+
+  device_simulation/               — extra utility for network device testing
+    main.py                        — simulation logic
+    Dockerfile                     — container definition
+
+```
+
+---
+
+## Related Repositories
+
+| Repository | Description |
 |---|---|
-| [`ingestor`](https://github.com/Admin-or-Admin/ingestor) | All three adapters in detail, startup coordination with ledger, log event format, adding new adapters |
-| [`rac-agents`](https://github.com/Admin-or-Admin/rac-agents) | Classifier/analyst/responder internals, LLM router, RAG knowledge bases, analytics events, manual mode |
-| [`ledger`](https://github.com/Admin-or-Admin/ledger) | Per-topic persistence logic, timestamp coordination, full database schema, table relationships |
-| [`gateway`](https://github.com/Admin-or-Admin/gateway) | All endpoints with request/response shapes, database queries, CORS configuration |
-| [`dashboard`](https://github.com/Admin-or-Admin/dashboard) | All six pages, AI Analyst tool definitions, Ask AI flow, Remediation approve/deny, api.ts reference |
-| [`correlator`](https://github.com/Admin-or-Admin/correlator) | Pattern detection logic, enrichment fields, configuration |
+| [`ingestor`](https://github.com/Admin-or-Admin/ingestor) | Log ingestion adapters (Elasticsearch, Mock, GNS3, Cisco) |
+| [`rac-agents`](https://github.com/Admin-or-Admin/rac-agents) | Classifier, Analyst, Responder agents |
+| [`ledger`](https://github.com/Admin-or-Admin/ledger) | Kafka consumer that writes all pipeline events to PostgreSQL |
+| [`gateway`](https://github.com/Admin-or-Admin/gateway) | FastAPI REST API |
+| [`shared`](https://github.com/Admin-or-Admin/shared) | Shared client libraries used by Python services |
+| [`dashboard`](https://github.com/Admin-or-Admin/dashboard) | React + TypeScript operator dashboard |
+| [`device_simulation`](https://github.com/Admin-or-Admin/device_simulation) | Network device simulation for testing |
+| [`.github`](https://github.com/Admin-or-Admin/.github) | Docker Compose files |
