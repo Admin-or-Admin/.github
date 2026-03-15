@@ -1,5 +1,9 @@
 # Aurora
 
+![OS: Linux](https://img.shields.io/badge/OS-Linux-blue?logo=linux&logoColor=white)
+![OS: macOS](https://img.shields.io/badge/OS-macOS-black?logo=apple&logoColor=white)
+![OS: Windows](https://img.shields.io/badge/OS-Windows-blue?logo=windows&logoColor=white)
+
 **AI-Powered Autonomous Security Operations Center**
 
 Aurora is an event-driven platform that ingests logs from any observability source, classifies them using AI agents, and autonomously investigates and responds to cybersecurity threats — with a human always in control of the final decision.
