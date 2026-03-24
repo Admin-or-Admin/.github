@@ -120,6 +120,9 @@ services:
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
       AUTH_ALGORITHM: ${AUTH_ALGORITHM:-HS256}
       AUTH_TOKEN_EXPIRE_MINUTES: ${AUTH_TOKEN_EXPIRE_MINUTES:-60}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+    volumes:
+      - ~/.gemini:/root/.gemini
     networks:
       - aurora-net
 
@@ -218,13 +221,16 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
       CLASSIFIER_MODE: kafka
       CLASSIFIER_HEARTBEAT_INTERVAL: 30
-      KNOWLEDGE_DIR: classifierKnowledge
+      # KNOWLEDGE_DIR: classifierKnowledge
       KNOWLEDGE_CHUNK_SIZE: 500
       KNOWLEDGE_CHUNK_OVERLAP: 50
       KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
+    volumes:
+      - ~/.gemini:/root/.gemini
     command: python rac-agents/classifier.py
     networks:
       - aurora-net
@@ -248,6 +254,7 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
       ANALYST_MODE: kafka
       ANALYST_HEARTBEAT_INTERVAL: 30
       MIN_CLASSIFICATION_CONFIDENCE: 70
@@ -256,6 +263,8 @@ services:
       ANALYST_KNOWLEDGE_CHUNK_OVERLAP: 50
       ANALYST_KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
+    volumes:
+      - ~/.gemini:/root/.gemini
     command: python rac-agents/analyst.py
     networks:
       - aurora-net
@@ -279,6 +288,7 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
       RESPONDER_MODE: kafka
       RESPONDER_HEARTBEAT_INTERVAL: 30
       RESPONDER_KNOWLEDGE_DIR: responderKnowledge
@@ -286,6 +296,8 @@ services:
       RESPONDER_KNOWLEDGE_CHUNK_OVERLAP: 50
       RESPONDER_KNOWLEDGE_TOP_K: 5
       RATE_LIMIT_WAIT_SECONDS: 60
+    volumes:
+      - ~/.gemini:/root/.gemini
     command: python rac-agents/responder.py
     networks:
       - aurora-net
