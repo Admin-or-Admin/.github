@@ -10,7 +10,6 @@ Aurora is an event-driven platform that ingests logs from any observability sour
 
 Built on Apache Kafka as its central nervous system, Aurora is composed of seven independent microservices that communicate exclusively through Kafka topics, making the architecture fully decoupled and horizontally scalable.
 
-Google link provided to view platform demo: https://drive.google.com/file/d/1f7hqsp0xTi2pdBL2dx-r48JpNE33yO6R/view?usp=sharing
 ---
 
 ## Table of Contents
@@ -877,3 +876,6 @@ aurora/                            — workspace root
 | [`dashboard`](https://github.com/Admin-or-Admin/dashboard) | React + TypeScript operator dashboard |
 | [`device_simulation`](https://github.com/Admin-or-Admin/device_simulation) | Network device simulation for testing |
 | [`.github`](https://github.com/Admin-or-Admin/.github) | Docker Compose files |
+
+
+Google link provided to view platform demo: https://drive.google.com/file/d/1f7hqsp0xTi2pdBL2dx-r48JpNE33yO6R/view?usp=sharing
