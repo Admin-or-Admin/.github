@@ -306,6 +306,48 @@ services:
     networks:
       - aurora-net
 
+  # --- eBPF Security Stack ---
+  tetragon:
+    image: quay.io/cilium/tetragon:v0.11.0
+    container_name: aurora-tetragon
+    restart: unless-stopped
+    privileged: true
+    # Tetragon needs host networking to monitor host kernel
+    network_mode: host
+    pid: host
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/fs/bpf:/sys/fs/bpf
+      - /etc/localtime:/etc/localtime:ro
+      - tetragon-socket:/var/run/tetragon
+    # Explicitly set the server-address to the Unix socket
+    command: ["tetragon", "--server-address", "unix:///var/run/tetragon/tetragon.sock"]
+    # healthcheck ensures daemon is up before reader connects
+    healthcheck:
+      test: ["CMD", "ls", "/var/run/tetragon/tetragon.sock"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ebpf-reader:
+    build:
+      context: .
+      dockerfile: ebpf/Dockerfile
+    container_name: aurora-ebpf-reader
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      tetragon:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: localhost:29092
+      # Use the shared volume to talk to the Tetragon daemon
+    volumes:
+      - tetragon-socket:/var/run/tetragon
+    # Need host network to reach Kafka on localhost:29092 from host
+    network_mode: host
+
 networks:
   aurora-net:
     driver: bridge
@@ -316,3 +358,4 @@ volumes:
   kafka-data:
   postgres-data:
   elasticsearch-data:
+  tetragon-socket:
