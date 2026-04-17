@@ -395,6 +395,7 @@ Tables are created automatically by the Ledger on startup. You only need to crea
 - Docker and Docker Compose
 - An OpenAI API key
 - An Elasticsearch instance reachable from the ingestor (or use the mock adapter for local testing)
+- **Linux Environment** (Optional natively, but strictly required if you intend to run the native eBPF sensor; macOS and Windows are not supported for kernel-level tracing)
 
 ---
 
@@ -413,6 +414,7 @@ git clone https://github.com/Admin-or-Admin/gateway.git
 git clone https://github.com/Admin-or-Admin/shared.git
 git clone https://github.com/Admin-or-Admin/dashboard.git
 git clone https://github.com/Admin-or-Admin/device_simulation.git
+git clone https://github.com/Admin-or-Admin/eBPF.git
 ```
 
 ### 2. Copy the Docker Compose file
@@ -624,6 +626,21 @@ http://localhost:8000/docs
 
 ## Running Services Individually
 
+### eBPF Sensor (Linux Only)
+
+> [!IMPORTANT]
+> **OS Compatibility Notice:** The eBPF sensor hooks directly into the Linux kernel to provide deep system observability. Due to its architectural requirements, **it can only be executed natively on Linux distributions**. macOS and Windows do not support eBPF out of the box and cannot run this service.
+
+```bash
+cd eBPF
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # configure environment variables if required
+
+# Run with elevated privileges to allow kernel-level tracing
+sudo venv/bin/python main.py
+```
+
 ### Ingestor (Python)
 
 ```bash
@@ -772,6 +789,11 @@ Copy files into the relevant knowledge folder and restart the agent. Supported f
 aurora/                            — workspace root
   docker-compose.yml               — full stack orchestration
 
+  eBPF/                            — kernel-level Linux telemetry sensor
+    main.py                        — eBPF tracing and collection logic
+    Dockerfile                     — container definition
+    requirements.txt               — python dependencies
+
   ingestor/
     main.py                        — adapter registry and startup coordination
     adapters/
@@ -869,6 +891,7 @@ aurora/                            — workspace root
 | Repository | Description |
 |---|---|
 | [`ingestor`](https://github.com/Admin-or-Admin/ingestor) | Log ingestion adapters (Elasticsearch, Mock, GNS3, Cisco) |
+| [`eBPF`](https://github.com/Admin-or-Admin/eBPF) | Kernel-level telemetry and observability sensor (Linux only) |
 | [`rac-agents`](https://github.com/Admin-or-Admin/rac-agents) | Classifier, Analyst, Responder agents |
 | [`ledger`](https://github.com/Admin-or-Admin/ledger) | Kafka consumer that writes all pipeline events to PostgreSQL |
 | [`gateway`](https://github.com/Admin-or-Admin/gateway) | FastAPI REST API |
@@ -876,6 +899,3 @@ aurora/                            — workspace root
 | [`dashboard`](https://github.com/Admin-or-Admin/dashboard) | React + TypeScript operator dashboard |
 | [`device_simulation`](https://github.com/Admin-or-Admin/device_simulation) | Network device simulation for testing |
 | [`.github`](https://github.com/Admin-or-Admin/.github) | Docker Compose files |
-
-
-Google link provided to view platform demo: https://drive.google.com/file/d/1f7hqsp0xTi2pdBL2dx-r48JpNE33yO6R/view?usp=sharing
