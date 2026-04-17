@@ -446,11 +446,12 @@ docker compose up --build -d
 1. docker compose up -f ./.github/docker-compose-externals-only.yml -d   # Kafka, PostgreSQL, Elasticsearch
 2. ledger                        # ready before ingestor starts
 3. ingestor                      # begins publishing to logs.unfiltered
-4. classifier                   # begins consuming logs.unfiltered
-5. analyst
-6. responder
-7. gateway
-8. dashboard
+4. eBPF                         # Linux OS only
+5. classifier                   # begins consuming logs.unfiltered
+6. analyst
+7. responder
+8. gateway
+9. dashboard
 ```
 
 ### 5. Open the dashboard
